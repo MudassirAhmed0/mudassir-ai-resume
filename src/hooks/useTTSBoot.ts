@@ -3,32 +3,49 @@
 import { useEffect } from "react";
 import { configureTTS, listVoices } from "@/lib/speech";
 
-export type UseTTSBootOptions = {
-  rate?: number;
-  pitch?: number;
-  lang?: string;
-  voiceName?: string;
-  voiceLangStartsWith?: string;
-  debug?: boolean;
-};
-
-export function useTTSBoot(options: UseTTSBootOptions = {}) {
+export function useTTSBoot({ debug = false }) {
   useEffect(() => {
-    configureTTS({
-      rate: options.rate ?? 1.28,
-      pitch: options.pitch ?? 1,
-      lang: options.lang ?? "en-US",
-      voiceName: options.voiceName,
-      voiceLangStartsWith: options.voiceLangStartsWith ?? "en-IN",
-      substitutions: [
-        { pattern: /\bMudassir\b/gi, replace: "Mud-das-sir" },
-        // { pattern: /\bAhmed\b/gi, replace: "ah-mad" },
-      ],
-    });
+    const synth = window.speechSynthesis;
 
-    if (options.debug) {
-      // log all available voices to console
-      console.table(listVoices());
+    function pickVoice() {
+      const voices = listVoices();
+      if (!voices.length) return; // still empty, skip
+
+      // Priority chain: en-IN → en-GB → en-US
+      const pick =
+        voices.find((v) => v.name.startsWith("Microsoft Mark")) ??
+        voices.find((v) => v.lang.startsWith("en-GB")) ??
+        voices.find((v) => v.lang.startsWith("en-US")) ??
+        null;
+
+      configureTTS({
+        rate: 1.28,
+        lang: "en-US",
+        voiceName: pick?.name,
+        substitutions: [
+          { pattern: /\bMudassir\b/gi, replace: "Moo-dah-sir" },
+          { pattern: /\bAhmed\b/gi, replace: "Ah-med" },
+        ],
+      });
+
+      if (debug) {
+        console.table(voices);
+        console.log(
+          "✅ TTS Boot configured with voice:",
+          pick?.name ?? "default"
+        );
+      }
+
+      // Once we have voices, stop listening
+      synth.onvoiceschanged = null;
     }
-  }, [options]);
+
+    // Try immediately
+    pickVoice();
+
+    // If empty, wait for voiceschanged event
+    if (synth.getVoices().length === 0) {
+      synth.onvoiceschanged = pickVoice;
+    }
+  }, [debug]);
 }

@@ -14,7 +14,8 @@ export function useSTT(opts: {
   onInterim: (text: string) => void;
   onFinalSubmit: (text: string) => void;
   lang?: string;
-  continuous?: boolean; // default false (phrase mode)
+  continuous?: boolean; // default false
+  debounceMs?: number; // how long to wait before treating as "final"
 }) {
   const ctor = useMemo(getSTTConstructor, []);
   const supported = !!ctor;
@@ -22,10 +23,13 @@ export function useSTT(opts: {
   const [isRecording, setIsRecording] = useState(false);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
 
-  // buffers per session
+  // buffers
   const baseRef = useRef<string>("");
   const finalRef = useRef<string>("");
   const interimRef = useRef<string>("");
+
+  // debounce timer for silence
+  const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const start = useCallback(
     (currentInput: string) => {
@@ -41,12 +45,14 @@ export function useSTT(opts: {
         recognitionRef.current.onresult = (e: SpeechRecognitionEvent) => {
           let finals = "";
           let interim = "";
+
           for (let i = e.resultIndex; i < e.results.length; i++) {
             const r = e.results[i];
             const tx = r[0].transcript;
             if (r.isFinal) finals += (finals ? " " : "") + tx;
             else interim += (interim ? " " : "") + tx;
           }
+
           if (finals) {
             finalRef.current = [finalRef.current, finals]
               .filter(Boolean)
@@ -58,6 +64,7 @@ export function useSTT(opts: {
             .filter(Boolean)
             .join(" ")
             .replace(/\s+/g, " ");
+
           opts.onInterim(live);
         };
 
@@ -67,17 +74,26 @@ export function useSTT(opts: {
 
         recognitionRef.current.onend = () => {
           setIsRecording(false);
-          interimRef.current = "";
-          const finalText = [baseRef.current, finalRef.current]
-            .filter(Boolean)
-            .join(" ")
-            .replace(/\s+/g, " ")
-            .trim();
-          opts.onFinalSubmit(finalText);
+
+          // clear any existing timer
+          if (silenceTimer.current) clearTimeout(silenceTimer.current);
+
+          // wait before final submit
+          silenceTimer.current = setTimeout(() => {
+            const finalText = [baseRef.current, finalRef.current]
+              .filter(Boolean)
+              .join(" ")
+              .replace(/\s+/g, " ")
+              .trim();
+
+            if (finalText) {
+              opts.onFinalSubmit(finalText);
+            }
+          }, opts.debounceMs ?? 1200); // default 1.2s silence
         };
       }
 
-      // reset per session
+      // reset buffers
       baseRef.current = currentInput;
       finalRef.current = "";
       interimRef.current = "";

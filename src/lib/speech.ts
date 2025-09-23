@@ -1,5 +1,6 @@
 // src/lib/speech.ts
 let synth: SpeechSynthesis | null = null;
+
 export type SubRule = { pattern: RegExp; replace: string };
 
 export type TTSOptions = {
@@ -62,9 +63,14 @@ function sleep(ms: number) {
 }
 
 async function voicesReady() {
-  const s = ensureSynth();
+  if (typeof window === "undefined") return;
+  const s = window.speechSynthesis;
   if (!s) return;
-  if (s.getVoices().length) return;
+
+  // Already loaded
+  if (s.getVoices().length > 0) return;
+
+  // Otherwise wait for event or timeout
   await new Promise<void>((resolve) => {
     const timer = setTimeout(resolve, 300);
     s.onvoiceschanged = () => {
@@ -127,18 +133,18 @@ export async function speak(
   text: string,
   onStart?: () => void,
   onEnd?: () => void,
-  opts: SpeakOptions = {}
+  opts: TTSOptions = {}
 ) {
   if (typeof window === "undefined") return;
-  const s = ensureSynth();
+  const s = window.speechSynthesis;
   if (!s || !text?.trim()) return;
 
-  // Cancel any ongoing speech
+  // Cancel ongoing
   try {
     if (s.speaking || s.paused) s.cancel();
   } catch {}
 
-  await sleep(60);
+  // ✅ Ensure voices are loaded
   await voicesReady();
 
   const utterText = applySubs(text, opts.substitutions);
