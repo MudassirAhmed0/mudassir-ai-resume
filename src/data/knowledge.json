@@ -1,6 +1,133 @@
 {
-    "projects": [],
-    "experience": [],
-    "skills": []
-  }
-  
+  "name": "Mudassir Ahmed",
+  "career_summary": "From junior React developer to lead frontend/full-stack engineer, Mudassir has grown through startups, client projects, and personal builds. He ships clean UIs, reliable APIs, and scalable infra. Known for staying calm under pressure and delivering.",
+  "roles": [
+    {
+      "from": "Sep 2019",
+      "to": "Aug 2020",
+      "title": "React Developer (Junior)",
+      "company": "Tensor Solutions",
+      "projects": [
+        {
+          "name": "Internal Component Library",
+          "context": "Small dev team duplicating UI across projects.",
+          "problem": "Inconsistent UI, no shared design system.",
+          "action": "As a junior, built a small React component library and documented it in Storybook.",
+          "tech": ["React", "Storybook"],
+          "impact": "Faster features, consistent UI; my first taste of systems thinking.",
+          "reflection": "Today I’d add tokens + a11y tests."
+        },
+        {
+          "name": "Subsidiary Portfolio Site",
+          "context": "Needed a modern marketing site.",
+          "problem": "No credible web presence for demos.",
+          "action": "Built a responsive React SPA with light animations and REST integration.",
+          "tech": ["React", "REST API"],
+          "impact": "Helped win a couple of client projects."
+        }
+      ]
+    },
+    {
+      "from": "Sep 2020",
+      "to": "Jun 2021",
+      "title": "React Developer (Junior → Intermediate)",
+      "company": "Digital Graphiks",
+      "projects": [
+        {
+          "name": "Pixel-Perfect UI Builds",
+          "context": "Digital agency work.",
+          "problem": "Exact Figma-to-code expectations.",
+          "action": "Implemented responsive, accessible React UIs with careful QA.",
+          "tech": ["React", "CSS", "Accessibility"],
+          "impact": "Met demanding client standards under deadlines."
+        },
+        {
+          "name": "API Integrations",
+          "context": "Frontends consuming varied backends.",
+          "action": "Integrated REST APIs with solid loading/error states.",
+          "tech": ["React", "REST APIs"],
+          "impact": "Better UX and stability for client apps."
+        }
+      ]
+    },
+    {
+      "from": "Jun 2021",
+      "to": "Oct 2022",
+      "title": "MERN Stack Developer (Senior)",
+      "company": "Upwork (Freelance)",
+      "projects": [
+        {
+          "name": "SaaS Dashboards",
+          "context": "Global clients needing admin/analytics.",
+          "problem": "Lacked clean UI + scalable APIs.",
+          "action": "Built end-to-end MERN dashboards (React, Node/Express, MongoDB).",
+          "tech": ["React", "Node.js", "MongoDB", "Express"],
+          "impact": "10+ delivered with 5⭐ reviews; strong client comms."
+        },
+        {
+          "name": "E-commerce Platforms",
+          "action": "Implemented carts, checkout, admin panels.",
+          "tech": ["MERN"],
+          "impact": "Handled payments/security; shipped full platforms."
+        },
+        {
+          "name": "Rescue Projects",
+          "context": "Half-broken apps from other devs.",
+          "action": "Debugged, rewrote modules, stabilized under pressure.",
+          "impact": "Built a reputation as a firefighter."
+        }
+      ]
+    },
+    {
+      "from": "Oct 2022",
+      "to": "Aug 2025",
+      "title": "Lead Frontend Developer",
+      "company": "Brackets Technology (Remote)",
+      "projects": [
+        {
+          "name": "Enterprise SaaS Frontend",
+          "context": "Needed scalable FE + realtime.",
+          "action": "Owned FE architecture, added SSR/ISR/SEO, integrated GraphQL + WebSockets.",
+          "tech": ["Next.js", "GraphQL", "WebSockets"],
+          "impact": "SEO up ~40%; realtime UX; lower perceived latency."
+        },
+        {
+          "name": "Design System",
+          "action": "Storybook-based system for consistency and speed."
+        },
+        {
+          "name": "CI/CD + Testing",
+          "action": "Vitest, Playwright, Supertest in CI.",
+          "impact": "Fewer prod bugs, safer releases."
+        }
+      ]
+    }
+  ],
+  "side_projects": [
+    {
+      "name": "Cinema Booking MVP",
+      "stack": ["Next.js","NestJS","GraphQL","Postgres","WebSockets"],
+      "impact": "Live seat map; seat-lock + timeout prevents double-booking."
+    },
+    {
+      "name": "Chat-App Monorepo",
+      "stack": ["NestJS","Prisma","Postgres","Redis","GraphQL Subscriptions","Docker"],
+      "impact": "Scalable chat with CI/CD and E2E tests."
+    },
+    {
+      "name": "React Native Mobile App",
+      "stack": ["React Native","Expo"],
+      "impact": "Cross-platform hobby app; learned mobile flows."
+    },
+    {
+      "name": "Hydrogen Storefront",
+      "stack": ["Shopify Hydrogen","GraphQL","Codegen"],
+      "impact": "Custom storefront optimized for performance."
+    }
+  ],
+  "bragging": [
+    "Calm under fire; I unblock teams and ship.",
+    "Think in product + infra, not just code.",
+    "Can take an idea to a working MVP fast."
+  ]
+}

@@ -21,7 +21,7 @@ export default function Chat() {
   async function sendMessage() {
     if (!input.trim()) return;
     const newMessages = [...messages, { role: "user", content: input }];
-    setMessages(newMessages);
+    setMessages(newMessages as Message[]);
     setInput("");
     setLoading(true);
 
@@ -33,7 +33,10 @@ export default function Chat() {
     const data = await res.json();
     const reply = data.reply?.content || "…";
 
-    setMessages([...newMessages, { role: "assistant", content: reply }]);
+    setMessages([
+      ...(newMessages as Message[]),
+      { role: "assistant", content: reply },
+    ]);
     setLoading(false);
 
     setSpeaking(true);
