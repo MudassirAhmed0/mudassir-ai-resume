@@ -11,12 +11,21 @@ type Role = "user" | "assistant";
 export type ChatMessage = { role: Role; content: string };
 
 type Props = {
-  /** Optional hook to bubble message events (each time a message is added). */
-  onMessage?: (message: ChatMessage, allMessages: ChatMessage[]) => void;
+  /** Bubble every new message out if needed */
+  onMessage?: (message: ChatMessage, all: ChatMessage[]) => void;
 };
 
 const CONVERSATION_ID = "default";
 const STORAGE_KEY = `ai-chat:${CONVERSATION_ID}`;
+
+// ----- Speech Recognition helpers (typed to your global speech.d.ts) -----
+type SRConstructor = new () => SpeechRecognition;
+
+function getSRConstructor(): SRConstructor | null {
+  if (typeof window === "undefined") return null;
+  return window.SpeechRecognition ?? window.webkitSpeechRecognition ?? null;
+}
+// ------------------------------------------------------------------------
 
 export default function Chat({ onMessage }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -26,8 +35,12 @@ export default function Chat({ onMessage }: Props) {
   const [isRecording, setIsRecording] = useState(false);
 
   const endRef = useRef<HTMLDivElement | null>(null);
-  const scrollAreaRef = useRef<HTMLDivElement | null>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
+
+  // STT buffers to avoid duplication
+  const baseBeforeRecordingRef = useRef<string>("");
+  const sttFinalRef = useRef<string>("");
+  const sttInterimRef = useRef<string>("");
 
   // Load from localStorage
   useEffect(() => {
@@ -38,9 +51,7 @@ export default function Chat({ onMessage }: Props) {
         const parsed = JSON.parse(raw) as ChatMessage[];
         if (Array.isArray(parsed)) setMessages(parsed);
       }
-    } catch {
-      // ignore
-    }
+    } catch {}
   }, []);
 
   // Persist to localStorage
@@ -48,16 +59,12 @@ export default function Chat({ onMessage }: Props) {
     if (typeof window === "undefined") return;
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
-    } catch {
-      // ignore
-    }
+    } catch {}
   }, [messages]);
 
-  // Auto-scroll to bottom when messages change
+  // Auto-scroll
   useEffect(() => {
-    const el = endRef.current;
-    if (!el) return;
-    el.scrollIntoView({ behavior: "smooth", block: "end" });
+    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, loading, speaking]);
 
   const addMessage = useCallback(
@@ -76,11 +83,10 @@ export default function Chat({ onMessage }: Props) {
     const content = input.trim();
     if (!content) return;
 
-    // Stop any current TTS before sending a new message
+    // stop any current TTS before sending (prevents echo)
     cancelSpeech();
     setSpeaking(false);
 
-    // Push user message
     const userMsg: ChatMessage = { role: "user", content };
     addMessage(userMsg);
     setInput("");
@@ -92,8 +98,7 @@ export default function Chat({ onMessage }: Props) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: [...messages, userMsg] }),
       });
-
-      if (!res.ok) throw new Error(`API error ${res.status}`);
+      if (!res.ok) throw new Error(`API ${res.status}`);
       const data = (await res.json()) as { reply?: string; error?: string };
 
       const replyText =
@@ -103,19 +108,24 @@ export default function Chat({ onMessage }: Props) {
       const aiMsg: ChatMessage = { role: "assistant", content: replyText };
       addMessage(aiMsg);
 
-      // Speak the reply and toggle Avatar pulse while speaking
+      // Ensure mic is OFF before TTS (prevents bot voice captured as input)
+      try {
+        recognitionRef.current?.abort();
+      } catch {}
+      setIsRecording(false);
+
+      // Speak + toggle avatar pulse
       speak(
         replyText,
         () => setSpeaking(true),
         () => setSpeaking(false)
       );
-    } catch (err) {
-      const aiMsg: ChatMessage = {
+    } catch {
+      addMessage({
         role: "assistant",
         content:
           "Something went wrong reaching the interview brain. Try again in a moment.",
-      };
-      addMessage(aiMsg);
+      });
     } finally {
       setLoading(false);
     }
@@ -128,53 +138,93 @@ export default function Chat({ onMessage }: Props) {
     }
   };
 
-  // Basic Speech-to-Text using Web Speech API (if available)
-  const canUseSTT = useMemo(() => {
-    if (typeof window === "undefined") return false;
-    return window.SpeechRecognition || window.webkitSpeechRecognition;
-  }, []);
+  // STT — final-only commits to avoid duplication
+  const canUseSTT = useMemo(
+    () => typeof window !== "undefined" && !!getSRConstructor(),
+    []
+  );
 
   const toggleRecording = useCallback(() => {
-    if (!canUseSTT) {
+    const SR = getSRConstructor();
+    if (!SR) {
       alert("Speech recognition not supported in this browser.");
       return;
     }
 
-    const SR: typeof window.SpeechRecognition =
-      window.SpeechRecognition || window.webkitSpeechRecognition;
+    // stop TTS if we start recording
+    cancelSpeech();
+    setSpeaking(false);
 
     if (!recognitionRef.current) {
       recognitionRef.current = new SR();
       recognitionRef.current.lang = "en-US";
+      recognitionRef.current.continuous = false;
       recognitionRef.current.interimResults = true;
       recognitionRef.current.maxAlternatives = 1;
 
-      recognitionRef.current.onresult = (e) => {
-        let transcript = "";
+      recognitionRef.current.onresult = (e: any) => {
+        let finalChunk = "";
+        let interimChunk = "";
+
         for (let i = e.resultIndex; i < e.results.length; i++) {
-          transcript += e.results[i][0].transcript;
+          const res = e.results[i];
+          const txt = res[0].transcript;
+          if (res.isFinal) finalChunk += (finalChunk ? " " : "") + txt;
+          else interimChunk += (interimChunk ? " " : "") + txt;
         }
-        setInput((prev) => {
-          const base = prev ? prev + " " : "";
-          return (base + transcript).trimStart();
-        });
+
+        if (finalChunk) {
+          sttFinalRef.current = [sttFinalRef.current, finalChunk]
+            .filter(Boolean)
+            .join(" ");
+        }
+        sttInterimRef.current = interimChunk;
+
+        const composed = [
+          baseBeforeRecordingRef.current,
+          sttFinalRef.current,
+          sttInterimRef.current,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .replace(/\s+/g, " ");
+        setInput(composed);
       };
+
       recognitionRef.current.onend = () => {
         setIsRecording(false);
+        sttInterimRef.current = "";
+        const composed = [baseBeforeRecordingRef.current, sttFinalRef.current]
+          .filter(Boolean)
+          .join(" ")
+          .replace(/\s+/g, " ");
+        setInput(composed);
       };
+
       recognitionRef.current.onerror = () => {
         setIsRecording(false);
       };
     }
 
     if (!isRecording) {
+      // snapshot current typed text as prefix
+      baseBeforeRecordingRef.current = input;
+      sttFinalRef.current = "";
+      sttInterimRef.current = "";
+
       setIsRecording(true);
-      recognitionRef.current.start();
+      try {
+        recognitionRef.current.start();
+      } catch {
+        setIsRecording(false);
+      }
     } else {
       setIsRecording(false);
-      recognitionRef.current.stop();
+      try {
+        recognitionRef.current.stop();
+      } catch {}
     }
-  }, [canUseSTT, isRecording]);
+  }, [input, isRecording]);
 
   return (
     <div className="flex h-[100dvh] max-h-screen flex-col">
@@ -190,7 +240,7 @@ export default function Chat({ onMessage }: Props) {
         </div>
       </div>
 
-      <ScrollArea className="flex-1 px-4 py-4" ref={scrollAreaRef as any}>
+      <ScrollArea className="flex-1 px-4 py-4">
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-3">
           {messages.map((m, i) => {
             const isUser = m.role === "user";
@@ -207,7 +257,7 @@ export default function Chat({ onMessage }: Props) {
                   </div>
                 )}
                 <div
-                  className={`max-w-[80%] rounded-lg px-3 py-2 text-sm leading-relaxed ${
+                  className={`max-w-[80%] rounded-lg px-3 py-2 text-sm leading-relaxed break-words whitespace-pre-wrap ${
                     isUser
                       ? "bg-blue-600 text-white"
                       : "bg-gray-100 text-gray-900"
@@ -218,6 +268,7 @@ export default function Chat({ onMessage }: Props) {
               </div>
             );
           })}
+
           {loading && (
             <div className="flex items-start gap-2">
               <div className="mt-0.5">
@@ -238,8 +289,14 @@ export default function Chat({ onMessage }: Props) {
             type="button"
             variant={isRecording ? "secondary" : "outline"}
             onClick={toggleRecording}
-            disabled={!canUseSTT || loading}
-            title={canUseSTT ? "Toggle voice input" : "Voice not supported"}
+            disabled={!canUseSTT || loading || speaking}
+            title={
+              !canUseSTT
+                ? "Voice input not supported"
+                : speaking
+                ? "Wait for the bot to finish speaking"
+                : "Toggle voice input"
+            }
           >
             {/* Mic icon */}
             <svg

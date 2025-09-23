@@ -1,48 +1,87 @@
 let synth: SpeechSynthesis | null = null;
 let current: SpeechSynthesisUtterance | null = null;
 
-/**
- * Speaks text using the Web Speech API.
- * - Cancels any ongoing speech before starting.
- * - Default rate ≈1.02, pitch 1, lang "en-US".
- * - Calls onStart/onEnd at appropriate times.
- */
-export function speak(text: string, onStart?: () => void, onEnd?: () => void) {
-  if (typeof window === "undefined") return; // noop on server
+function ensureSynth() {
+  if (typeof window === "undefined") return null;
   if (!synth) synth = window.speechSynthesis;
+  return synth;
+}
 
-  // cancel any ongoing speech
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function voicesReady(): Promise<void> {
+  const s = ensureSynth();
+  if (!s) return;
+  const existing = s.getVoices();
+  if (existing && existing.length) return;
+
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => resolve(), 300);
+    s.onvoiceschanged = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+  });
+}
+
+/**
+ * Speak text with Web Speech API.
+ * - Cancels previous first.
+ * - Defaults: rate ≈ 1.02, pitch 1, lang "en-US".
+ * - Calls onStart/onEnd hooks.
+ */
+export async function speak(
+  text: string,
+  onStart?: () => void,
+  onEnd?: () => void,
+  opts?: { rate?: number; pitch?: number; lang?: string }
+) {
+  if (typeof window === "undefined") return;
+  const s = ensureSynth();
+  if (!s || !text?.trim()) return;
+
+  // Cancel any ongoing speech
   try {
-    if (synth && synth.speaking) synth.cancel();
-  } catch {
-    /* ignore */
-  }
+    if (s.speaking || s.paused) s.cancel();
+  } catch {}
 
-  if (!text?.trim()) return;
+  // Small delay helps Chrome after cancel()
+  await sleep(80);
+  await voicesReady();
 
   const u = new SpeechSynthesisUtterance(text);
-  u.rate = 1.02;
-  u.pitch = 1;
-  u.lang = "en-US";
+  u.rate = opts?.rate ?? 1.02;
+  u.pitch = opts?.pitch ?? 1;
+  u.lang = opts?.lang ?? "en-US";
+
+  // Optional: prefer an en-US voice if available
+  try {
+    const v = s
+      .getVoices()
+      .find((v) => (opts?.lang ?? "en-US").startsWith(v.lang));
+    if (v) u.voice = v;
+  } catch {}
 
   u.onstart = () => onStart?.();
-  const cleanup = () => {
+  const done = () => {
     current = null;
     onEnd?.();
   };
-  u.onend = cleanup;
-  u.onerror = cleanup;
+  u.onend = done;
+  u.onerror = done;
 
   current = u;
-  synth!.speak(u);
+  s.speak(u);
 }
 
 /** Cancel any current speech immediately. */
 export function cancelSpeech() {
   if (typeof window === "undefined") return;
-  if (!synth) synth = window.speechSynthesis;
+  const s = ensureSynth();
   try {
-    if (synth && (synth.speaking || synth.paused)) synth.cancel();
+    if (s && (s.speaking || s.paused)) s.cancel();
   } finally {
     current = null;
   }
@@ -51,6 +90,6 @@ export function cancelSpeech() {
 /** Returns true while the synthesizer is speaking. */
 export function isSpeaking(): boolean {
   if (typeof window === "undefined") return false;
-  if (!synth) synth = window.speechSynthesis;
-  return !!synth?.speaking;
+  const s = ensureSynth();
+  return !!s?.speaking;
 }
