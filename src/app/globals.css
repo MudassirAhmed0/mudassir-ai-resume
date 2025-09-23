@@ -124,3 +124,14 @@ body,
     @apply bg-background text-foreground;
   }
 }
+
+@layer utilities {
+  @keyframes avatar-shadow-pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.35); } /* indigo-500 */
+    70%  { box-shadow: 0 0 0 12px rgba(99, 102, 241, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0); }
+  }
+  .avatar-shadow-pulse {
+    animation: avatar-shadow-pulse 1.8s ease-in-out infinite;
+  }
+}
