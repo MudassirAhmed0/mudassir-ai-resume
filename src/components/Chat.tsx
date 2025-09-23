@@ -10,12 +10,16 @@ import { speak, cancelSpeech, isSpeaking } from "@/lib/speech";
 type Role = "user" | "assistant";
 export type ChatMessage = { role: Role; content: string };
 
-type Props = {
-  onMessage?: (message: ChatMessage, all: ChatMessage[]) => void;
-};
+type Props = { onMessage?: (message: ChatMessage, all: ChatMessage[]) => void };
 
 const CONVERSATION_ID = "default";
 const STORAGE_KEY = `ai-chat:${CONVERSATION_ID}`;
+
+// Detect out-of-scope line from SYSTEM_PROMPT behavior
+function isOutOfScope(content: string) {
+  const c = content.toLowerCase();
+  return c.includes("professional avatar") && c.includes("happy to talk");
+}
 
 export default function Chat({ onMessage }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -23,7 +27,6 @@ export default function Chat({ onMessage }: Props) {
   const [loading, setLoading] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
-
   const endRef = useRef<HTMLDivElement | null>(null);
 
   // --- Web Speech Recognition (webkit) ---
@@ -32,9 +35,9 @@ export default function Chat({ onMessage }: Props) {
     []
   );
   const recognitionRef = useRef<SpeechRecognition | null>(null);
-  const sttBaseRef = useRef<string>(""); // text that was in input before recording
-  const sttFinalRef = useRef<string>(""); // accumulated final pieces
-  const sttInterimRef = useRef<string>(""); // current interim piece
+  const sttBaseRef = useRef<string>("");
+  const sttFinalRef = useRef<string>("");
+  const sttInterimRef = useRef<string>("");
 
   // Load persisted
   useEffect(() => {
@@ -72,14 +75,13 @@ export default function Chat({ onMessage }: Props) {
     [onMessage]
   );
 
-  // sendMessage supports an override so STT can submit immediately on end
+  // Core send (STT may pass `override`)
   const sendMessage = useCallback(
     async (override?: string) => {
       if (loading) return;
       const content = (override ?? input).trim();
       if (!content) return;
 
-      // stop any current TTS before sending (avoid echo)
       cancelSpeech();
       setSpeaking(false);
 
@@ -106,13 +108,12 @@ export default function Chat({ onMessage }: Props) {
         const aiMsg: ChatMessage = { role: "assistant", content: replyText };
         addMessage(aiMsg);
 
-        // ensure mic is off before TTS
+        // kill mic before speaking to avoid echo
         try {
           recognitionRef.current?.abort();
         } catch {}
         setIsRecording(false);
 
-        // TTS
         speak(
           replyText,
           () => setSpeaking(true),
@@ -131,30 +132,29 @@ export default function Chat({ onMessage }: Props) {
     [addMessage, input, loading, messages]
   );
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  const onEnter = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
       e.preventDefault();
       sendMessage();
     }
   };
 
-  // ----- Mic: start/stop recognition; stream interim; submit on end -----
+  // Mic toggle with interim streaming; auto-submit on end
   const toggleRecording = useCallback(() => {
     if (!supportsSTT) return;
 
-    // @ts-ignore - webkitSpeechRecognition exists on Chrome-based browsers
+    // @ts-ignore Chrome-based
     const Ctor = window.webkitSpeechRecognition as {
       new (): SpeechRecognition;
     };
 
-    // stop TTS if starting mic
     cancelSpeech();
     setSpeaking(false);
 
     if (!recognitionRef.current) {
       recognitionRef.current = new Ctor();
       recognitionRef.current.lang = "en-US";
-      recognitionRef.current.continuous = false; // phrase mode
+      recognitionRef.current.continuous = false;
       recognitionRef.current.interimResults = true;
       recognitionRef.current.maxAlternatives = 1;
 
@@ -196,13 +196,8 @@ export default function Chat({ onMessage }: Props) {
           .replace(/\s+/g, " ")
           .trim();
 
-        // clear interim on UI
         setInput(finalText);
-
-        if (finalText) {
-          // Auto-submit the final transcript
-          await sendMessage(finalText);
-        }
+        if (finalText) await sendMessage(finalText);
       };
 
       recognitionRef.current.onerror = () => {
@@ -211,7 +206,6 @@ export default function Chat({ onMessage }: Props) {
     }
 
     if (!isRecording) {
-      // snapshot current typed text as base, reset buffers
       sttBaseRef.current = input;
       sttFinalRef.current = "";
       sttInterimRef.current = "";
@@ -232,15 +226,25 @@ export default function Chat({ onMessage }: Props) {
 
   return (
     <div className="flex h-[100dvh] max-h-screen flex-col">
+      {/* Top bar with avatar + resume link */}
       <div className="border-b px-4 py-3">
-        <div className="flex items-center gap-3">
-          <Avatar speaking={speaking && isSpeaking()} />
-          <div className="text-sm">
-            <div className="font-semibold">Mudassir (AI)</div>
-            <div className="text-muted-foreground">
-              Resume Interview Assistant
+        <div className="mx-auto flex w-full max-w-3xl items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <Avatar speaking={speaking && isSpeaking()} />
+            <div className="text-sm">
+              <div className="font-semibold">Mudassir (AI)</div>
+              <div className="text-muted-foreground">
+                Resume Interview Assistant
+              </div>
             </div>
           </div>
+
+          {/* Place your actual file as /public/resume.pdf */}
+          <Button asChild variant="outline">
+            <a href="/resume.pdf" target="_blank" rel="noopener noreferrer">
+              Download Resume (PDF)
+            </a>
+          </Button>
         </div>
       </div>
 
@@ -248,6 +252,7 @@ export default function Chat({ onMessage }: Props) {
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-3">
           {messages.map((m, i) => {
             const isUser = m.role === "user";
+            const showScopeChip = !isUser && isOutOfScope(m.content);
             return (
               <div
                 key={i}
@@ -260,14 +265,22 @@ export default function Chat({ onMessage }: Props) {
                     <Avatar speaking={speaking && isSpeaking()} size={36} />
                   </div>
                 )}
-                <div
-                  className={`max-w-[80%] rounded-lg px-3 py-2 text-sm leading-relaxed break-words whitespace-pre-wrap ${
-                    isUser
-                      ? "bg-blue-600 text-white"
-                      : "bg-gray-100 text-gray-900"
-                  }`}
-                >
-                  {m.content}
+                <div className="flex max-w-[80%] flex-col">
+                  <div
+                    className={`rounded-lg px-3 py-2 text-sm leading-relaxed break-words whitespace-pre-wrap ${
+                      isUser
+                        ? "bg-blue-600 text-white"
+                        : "bg-gray-100 text-gray-900"
+                    }`}
+                  >
+                    {m.content}
+                  </div>
+
+                  {showScopeChip && (
+                    <div className="mt-1 inline-flex items-center gap-1 self-start rounded-full border border-gray-300 px-2 py-0.5 text-[11px] text-gray-600">
+                      professional topics only
+                    </div>
+                  )}
                 </div>
               </div>
             );
@@ -325,7 +338,7 @@ export default function Chat({ onMessage }: Props) {
           <Input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
+            onKeyDown={onEnter}
             placeholder="Ask about my roles, projects, stack…"
             disabled={loading}
           />

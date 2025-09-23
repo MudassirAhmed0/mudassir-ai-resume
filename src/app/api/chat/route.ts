@@ -1,10 +1,9 @@
-// src/app/api/chat/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
-import knowledge from "@/data/knowledge.json"; // ensure tsconfig has "resolveJsonModule": true
+import knowledge from "@/data/knowledge.json";
 import { SYSTEM_PROMPT } from "@/lib/prompt";
 
-type Role = "system" | "user" | "assistant";
+type Role = "user" | "assistant"; // ← disallow client 'system' injection
 type Message = { role: Role; content: string };
 
 export async function POST(req: NextRequest) {
@@ -20,36 +19,29 @@ export async function POST(req: NextRequest) {
     const body = (await req.json().catch(() => ({}))) as {
       messages?: Message[];
     };
+    const input = Array.isArray(body?.messages) ? body.messages : [];
 
-    const inputMessages = Array.isArray(body?.messages) ? body.messages : [];
-
-    // basic sanitization
-    const allowedRoles: Role[] = ["system", "user", "assistant"];
-    const sanitized: Message[] = inputMessages.filter(
+    // sanitize client messages (user/assistant only)
+    const sanitized: Message[] = input.filter(
       (m): m is Message =>
         m &&
         typeof m.content === "string" &&
-        allowedRoles.includes(m.role as Role)
+        (m.role === "user" || m.role === "assistant")
     );
 
     const openai = new OpenAI({ apiKey });
 
-    const systemMessages: Message[] = [
-      { role: "system", content: SYSTEM_PROMPT },
-      {
-        role: "system",
-        content: "KNOWLEDGE = " + JSON.stringify(knowledge),
-      },
-    ];
-
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0.7,
-      messages: [...systemMessages, ...sanitized],
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: "KNOWLEDGE = " + JSON.stringify(knowledge) },
+        ...sanitized,
+      ],
     });
 
     const reply = completion.choices?.[0]?.message?.content ?? "";
-
     return NextResponse.json({ reply });
   } catch (err) {
     console.error("api/chat error:", err);
