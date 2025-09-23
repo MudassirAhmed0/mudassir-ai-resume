@@ -11,21 +11,11 @@ type Role = "user" | "assistant";
 export type ChatMessage = { role: Role; content: string };
 
 type Props = {
-  /** Bubble every new message out if needed */
   onMessage?: (message: ChatMessage, all: ChatMessage[]) => void;
 };
 
 const CONVERSATION_ID = "default";
 const STORAGE_KEY = `ai-chat:${CONVERSATION_ID}`;
-
-// ----- Speech Recognition helpers (typed to your global speech.d.ts) -----
-type SRConstructor = new () => SpeechRecognition;
-
-function getSRConstructor(): SRConstructor | null {
-  if (typeof window === "undefined") return null;
-  return window.SpeechRecognition ?? window.webkitSpeechRecognition ?? null;
-}
-// ------------------------------------------------------------------------
 
 export default function Chat({ onMessage }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -35,14 +25,18 @@ export default function Chat({ onMessage }: Props) {
   const [isRecording, setIsRecording] = useState(false);
 
   const endRef = useRef<HTMLDivElement | null>(null);
+
+  // --- Web Speech Recognition (webkit) ---
+  const supportsSTT = useMemo(
+    () => typeof window !== "undefined" && "webkitSpeechRecognition" in window,
+    []
+  );
   const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const sttBaseRef = useRef<string>(""); // text that was in input before recording
+  const sttFinalRef = useRef<string>(""); // accumulated final pieces
+  const sttInterimRef = useRef<string>(""); // current interim piece
 
-  // STT buffers to avoid duplication
-  const baseBeforeRecordingRef = useRef<string>("");
-  const sttFinalRef = useRef<string>("");
-  const sttInterimRef = useRef<string>("");
-
-  // Load from localStorage
+  // Load persisted
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
@@ -54,7 +48,7 @@ export default function Chat({ onMessage }: Props) {
     } catch {}
   }, []);
 
-  // Persist to localStorage
+  // Persist
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
@@ -78,58 +72,64 @@ export default function Chat({ onMessage }: Props) {
     [onMessage]
   );
 
-  const sendMessage = useCallback(async () => {
-    if (loading) return;
-    const content = input.trim();
-    if (!content) return;
+  // sendMessage supports an override so STT can submit immediately on end
+  const sendMessage = useCallback(
+    async (override?: string) => {
+      if (loading) return;
+      const content = (override ?? input).trim();
+      if (!content) return;
 
-    // stop any current TTS before sending (prevents echo)
-    cancelSpeech();
-    setSpeaking(false);
+      // stop any current TTS before sending (avoid echo)
+      cancelSpeech();
+      setSpeaking(false);
 
-    const userMsg: ChatMessage = { role: "user", content };
-    addMessage(userMsg);
-    setInput("");
-    setLoading(true);
+      const userMsg: ChatMessage = { role: "user", content };
+      const history = [...messages, userMsg];
 
-    try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: [...messages, userMsg] }),
-      });
-      if (!res.ok) throw new Error(`API ${res.status}`);
-      const data = (await res.json()) as { reply?: string; error?: string };
+      addMessage(userMsg);
+      setInput("");
+      setLoading(true);
 
-      const replyText =
-        (typeof data.reply === "string" ? data.reply : "") ||
-        "Sorry, I couldn’t generate a reply.";
-
-      const aiMsg: ChatMessage = { role: "assistant", content: replyText };
-      addMessage(aiMsg);
-
-      // Ensure mic is OFF before TTS (prevents bot voice captured as input)
       try {
-        recognitionRef.current?.abort();
-      } catch {}
-      setIsRecording(false);
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messages: history }),
+        });
+        if (!res.ok) throw new Error(`API ${res.status}`);
+        const data = (await res.json()) as { reply?: string; error?: string };
 
-      // Speak + toggle avatar pulse
-      speak(
-        replyText,
-        () => setSpeaking(true),
-        () => setSpeaking(false)
-      );
-    } catch {
-      addMessage({
-        role: "assistant",
-        content:
-          "Something went wrong reaching the interview brain. Try again in a moment.",
-      });
-    } finally {
-      setLoading(false);
-    }
-  }, [addMessage, input, loading, messages]);
+        const replyText =
+          (typeof data.reply === "string" ? data.reply : "") ||
+          "Sorry, I couldn’t generate a reply.";
+
+        const aiMsg: ChatMessage = { role: "assistant", content: replyText };
+        addMessage(aiMsg);
+
+        // ensure mic is off before TTS
+        try {
+          recognitionRef.current?.abort();
+        } catch {}
+        setIsRecording(false);
+
+        // TTS
+        speak(
+          replyText,
+          () => setSpeaking(true),
+          () => setSpeaking(false)
+        );
+      } catch {
+        addMessage({
+          role: "assistant",
+          content:
+            "Something went wrong reaching the interview brain. Try again in a moment.",
+        });
+      } finally {
+        setLoading(false);
+      }
+    },
+    [addMessage, input, loading, messages]
+  );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
@@ -138,27 +138,23 @@ export default function Chat({ onMessage }: Props) {
     }
   };
 
-  // STT — final-only commits to avoid duplication
-  const canUseSTT = useMemo(
-    () => typeof window !== "undefined" && !!getSRConstructor(),
-    []
-  );
-
+  // ----- Mic: start/stop recognition; stream interim; submit on end -----
   const toggleRecording = useCallback(() => {
-    const SR = getSRConstructor();
-    if (!SR) {
-      alert("Speech recognition not supported in this browser.");
-      return;
-    }
+    if (!supportsSTT) return;
 
-    // stop TTS if we start recording
+    // @ts-ignore - webkitSpeechRecognition exists on Chrome-based browsers
+    const Ctor = window.webkitSpeechRecognition as {
+      new (): SpeechRecognition;
+    };
+
+    // stop TTS if starting mic
     cancelSpeech();
     setSpeaking(false);
 
     if (!recognitionRef.current) {
-      recognitionRef.current = new SR();
+      recognitionRef.current = new Ctor();
       recognitionRef.current.lang = "en-US";
-      recognitionRef.current.continuous = false;
+      recognitionRef.current.continuous = false; // phrase mode
       recognitionRef.current.interimResults = true;
       recognitionRef.current.maxAlternatives = 1;
 
@@ -180,25 +176,33 @@ export default function Chat({ onMessage }: Props) {
         }
         sttInterimRef.current = interimChunk;
 
-        const composed = [
-          baseBeforeRecordingRef.current,
+        const live = [
+          sttBaseRef.current,
           sttFinalRef.current,
           sttInterimRef.current,
         ]
           .filter(Boolean)
           .join(" ")
           .replace(/\s+/g, " ");
-        setInput(composed);
+        setInput(live);
       };
 
-      recognitionRef.current.onend = () => {
+      recognitionRef.current.onend = async () => {
         setIsRecording(false);
         sttInterimRef.current = "";
-        const composed = [baseBeforeRecordingRef.current, sttFinalRef.current]
+        const finalText = [sttBaseRef.current, sttFinalRef.current]
           .filter(Boolean)
           .join(" ")
-          .replace(/\s+/g, " ");
-        setInput(composed);
+          .replace(/\s+/g, " ")
+          .trim();
+
+        // clear interim on UI
+        setInput(finalText);
+
+        if (finalText) {
+          // Auto-submit the final transcript
+          await sendMessage(finalText);
+        }
       };
 
       recognitionRef.current.onerror = () => {
@@ -207,8 +211,8 @@ export default function Chat({ onMessage }: Props) {
     }
 
     if (!isRecording) {
-      // snapshot current typed text as prefix
-      baseBeforeRecordingRef.current = input;
+      // snapshot current typed text as base, reset buffers
+      sttBaseRef.current = input;
       sttFinalRef.current = "";
       sttInterimRef.current = "";
 
@@ -224,7 +228,7 @@ export default function Chat({ onMessage }: Props) {
         recognitionRef.current.stop();
       } catch {}
     }
-  }, [input, isRecording]);
+  }, [input, sendMessage, supportsSTT, isRecording]);
 
   return (
     <div className="flex h-[100dvh] max-h-screen flex-col">
@@ -289,9 +293,9 @@ export default function Chat({ onMessage }: Props) {
             type="button"
             variant={isRecording ? "secondary" : "outline"}
             onClick={toggleRecording}
-            disabled={!canUseSTT || loading || speaking}
+            disabled={!supportsSTT || loading || speaking}
             title={
-              !canUseSTT
+              !supportsSTT
                 ? "Voice input not supported"
                 : speaking
                 ? "Wait for the bot to finish speaking"
@@ -326,7 +330,10 @@ export default function Chat({ onMessage }: Props) {
             disabled={loading}
           />
 
-          <Button onClick={sendMessage} disabled={loading || !input.trim()}>
+          <Button
+            onClick={() => sendMessage()}
+            disabled={loading || !input.trim()}
+          >
             Send
           </Button>
         </div>
