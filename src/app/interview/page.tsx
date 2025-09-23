@@ -6,6 +6,7 @@ import QuickChips from "@/components/QuickChips";
 import { useSpeakingRaf } from "@/hooks/useSpeakingRaf";
 import { useConversationSeed } from "@/hooks/useConversationSeed";
 import { useQuickAsk } from "@/hooks/useQuickAsk";
+import { useTTSBoot } from "@/hooks/useTTSBoot";
 
 const CONVERSATION_ID = "default";
 
@@ -17,6 +18,7 @@ const CHIPS = [
 ];
 
 export default function InterviewPage() {
+  useTTSBoot({ debug: true });
   const speaking = useSpeakingRaf();
 
   // Seed greeting if first visit, and get a key to remount Chat after storage mutations

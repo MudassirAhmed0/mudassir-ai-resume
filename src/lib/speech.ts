@@ -1,5 +1,55 @@
+// src/lib/speech.ts
 let synth: SpeechSynthesis | null = null;
-let current: SpeechSynthesisUtterance | null = null;
+export type SubRule = { pattern: RegExp; replace: string };
+
+export type TTSOptions = {
+  rate?: number; // 0.1 – 10 (default ~1.25)
+  pitch?: number; // 0 – 2 (default 1)
+  lang?: string; // e.g. "en-US", "en-IN"
+  voiceName?: string; // exact match for SpeechSynthesisVoice.name
+  voiceLangStartsWith?: string; // e.g. "en-IN" → prefer voices with that prefix
+  substitutions?: SubRule[]; // replace text before speaking
+};
+export type SpeakOptions = {
+  rate?: number; // 0.1–10
+  pitch?: number; // 0–2
+  lang?: string; // e.g. "en-IN", "en-US"
+  voiceName?: string; // exact name match
+  voiceLangStartsWith?: string; // <--- this must be here
+  substitutions?: { pattern: RegExp; replace: string }[];
+};
+
+type TTSDefaults = Required<Pick<SpeakOptions, "rate" | "pitch" | "lang">> & {
+  voiceName?: string;
+  voiceLangStartsWith?: string;
+  substitutions: SubRule[];
+};
+
+const DEFAULTS: TTSDefaults = {
+  // Faster by default
+  rate: 1.25,
+  pitch: 1,
+  lang: "en-US",
+  voiceName: undefined,
+  voiceLangStartsWith: undefined,
+  // Built-in name fixes
+  substitutions: [
+    // Say “Moo-dus-sir Ah-med”
+    { pattern: /\bMudassir Ahmed\b/gi, replace: "Moo-dus-sir Ah-med" },
+    { pattern: /\bMudassir\b/gi, replace: "Moo-dus-sir" },
+    { pattern: /\bAhmed\b/gi, replace: "Ah-med" },
+  ],
+};
+
+export function configureTTS(prefs: Partial<TTSDefaults>) {
+  if (prefs.rate != null) DEFAULTS.rate = prefs.rate;
+  if (prefs.pitch != null) DEFAULTS.pitch = prefs.pitch;
+  if (prefs.lang != null) DEFAULTS.lang = prefs.lang;
+  if (prefs.voiceName !== undefined) DEFAULTS.voiceName = prefs.voiceName;
+  if (prefs.voiceLangStartsWith !== undefined)
+    DEFAULTS.voiceLangStartsWith = prefs.voiceLangStartsWith;
+  if (prefs.substitutions) DEFAULTS.substitutions = prefs.substitutions;
+}
 
 function ensureSynth() {
   if (typeof window === "undefined") return null;
@@ -11,14 +61,12 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function voicesReady(): Promise<void> {
+async function voicesReady() {
   const s = ensureSynth();
   if (!s) return;
-  const existing = s.getVoices();
-  if (existing && existing.length) return;
-
+  if (s.getVoices().length) return;
   await new Promise<void>((resolve) => {
-    const timer = setTimeout(() => resolve(), 300);
+    const timer = setTimeout(resolve, 300);
     s.onvoiceschanged = () => {
       clearTimeout(timer);
       resolve();
@@ -26,17 +74,60 @@ async function voicesReady(): Promise<void> {
   });
 }
 
-/**
- * Speak text with Web Speech API.
- * - Cancels previous first.
- * - Defaults: rate ≈ 1.02, pitch 1, lang "en-US".
- * - Calls onStart/onEnd hooks.
- */
+function pickVoice(
+  opts: SpeakOptions,
+  s: SpeechSynthesis
+): SpeechSynthesisVoice | null {
+  const voices = s.getVoices();
+  // Priority 1: explicit name
+  if (opts.voiceName) {
+    const v = voices.find((v) => v.name === opts.voiceName);
+    if (v) return v;
+  }
+  // Priority 2: explicit prefix on call
+  if (opts.voiceLangStartsWith) {
+    const v = voices.find((v) => v.lang?.startsWith(opts.voiceLangStartsWith!));
+    if (v) return v;
+  }
+  // Priority 3: configured defaults
+  if (DEFAULTS.voiceName) {
+    const v = voices.find((v) => v.name === DEFAULTS.voiceName);
+    if (v) return v;
+  }
+  if (DEFAULTS.voiceLangStartsWith) {
+    const v = voices.find((v) =>
+      v.lang?.startsWith(DEFAULTS.voiceLangStartsWith!)
+    );
+    if (v) return v;
+  }
+  // Priority 4: lang on call
+  if (opts.lang) {
+    const v = voices.find((v) => v.lang?.startsWith(opts.lang!));
+    if (v) return v;
+  }
+  // Priority 5: default lang
+  const v = voices.find((v) => v.lang?.startsWith(DEFAULTS.lang));
+  return v ?? null;
+}
+
+function applySubs(text: string, extra?: SubRule[]) {
+  const rules = [...DEFAULTS.substitutions, ...(extra ?? [])];
+  return rules.reduce((acc, r) => acc.replace(r.pattern, r.replace), text);
+}
+
+/** List voices (handy for picking a good one in dev tools). */
+export function listVoices(): { name: string; lang: string }[] {
+  const s = ensureSynth();
+  if (!s) return [];
+  return s.getVoices().map((v) => ({ name: v.name, lang: v.lang }));
+}
+
+/** Main speak API (backwards compatible) */
 export async function speak(
   text: string,
   onStart?: () => void,
   onEnd?: () => void,
-  opts?: { rate?: number; pitch?: number; lang?: string }
+  opts: SpeakOptions = {}
 ) {
   if (typeof window === "undefined") return;
   const s = ensureSynth();
@@ -47,49 +138,36 @@ export async function speak(
     if (s.speaking || s.paused) s.cancel();
   } catch {}
 
-  // Small delay helps Chrome after cancel()
-  await sleep(80);
+  await sleep(60);
   await voicesReady();
 
-  const u = new SpeechSynthesisUtterance(text);
-  u.rate = opts?.rate ?? 1.02;
-  u.pitch = opts?.pitch ?? 1;
-  u.lang = opts?.lang ?? "en-US";
+  const utterText = applySubs(text, opts.substitutions);
+  const u = new SpeechSynthesisUtterance(utterText);
 
-  // Optional: prefer an en-US voice if available
-  try {
-    const v = s
-      .getVoices()
-      .find((v) => (opts?.lang ?? "en-US").startsWith(v.lang));
-    if (v) u.voice = v;
-  } catch {}
+  u.rate = opts.rate ?? DEFAULTS.rate;
+  u.pitch = opts.pitch ?? DEFAULTS.pitch;
+  u.lang = opts.lang ?? DEFAULTS.lang;
+
+  const chosen = pickVoice(opts, s);
+  if (chosen) u.voice = chosen;
 
   u.onstart = () => onStart?.();
-  const done = () => {
-    current = null;
-    onEnd?.();
-  };
+  const done = () => onEnd?.();
   u.onend = done;
   u.onerror = done;
 
-  current = u;
   s.speak(u);
 }
 
-/** Cancel any current speech immediately. */
 export function cancelSpeech() {
-  if (typeof window === "undefined") return;
   const s = ensureSynth();
   try {
     if (s && (s.speaking || s.paused)) s.cancel();
-  } finally {
-    current = null;
-  }
+  } catch {}
 }
 
-/** Returns true while the synthesizer is speaking. */
+/** True if currently speaking. */
 export function isSpeaking(): boolean {
-  if (typeof window === "undefined") return false;
   const s = ensureSynth();
   return !!s?.speaking;
 }

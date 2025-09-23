@@ -62,7 +62,7 @@ export function useChatController(params: Params = {}) {
         addMessage(aiMsg);
 
         // speak the reply
-        tts.speakText(reply);
+        tts.speakText(reply, { rate: 1.28, voiceLangStartsWith: "en-IN" });
       } catch {
         addMessage({
           role: "assistant",

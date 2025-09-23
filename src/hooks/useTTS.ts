@@ -1,7 +1,9 @@
 import { useCallback, useState } from "react";
-import { speak as coreSpeak, cancelSpeech as coreCancel } from "@/lib/speech";
-
-export type TTSOptions = { rate?: number; pitch?: number; lang?: string };
+import {
+  speak as coreSpeak,
+  cancelSpeech as coreCancel,
+  TTSOptions,
+} from "@/lib/speech";
 
 export function useTTS() {
   const [speaking, setSpeaking] = useState(false);
