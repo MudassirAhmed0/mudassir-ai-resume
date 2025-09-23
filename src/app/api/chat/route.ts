@@ -2,30 +2,57 @@
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
 import knowledge from "@/data/knowledge.json"; // ensure tsconfig has "resolveJsonModule": true
-import { SYSTEM_PROMPT, makeKnowledgeSystemMessage } from "@/lib/prompt";
+import { SYSTEM_PROMPT } from "@/lib/prompt";
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-type Msg = { role: "system" | "user" | "assistant"; content: string };
+type Role = "system" | "user" | "assistant";
+type Message = { role: Role; content: string };
 
 export async function POST(req: NextRequest) {
   try {
-    const { messages = [] } = (await req.json()) as { messages: Msg[] };
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      return NextResponse.json(
+        { error: "Missing OPENAI_API_KEY" },
+        { status: 500 }
+      );
+    }
 
-    const systemMessages: Msg[] = [
+    const body = (await req.json().catch(() => ({}))) as {
+      messages?: Message[];
+    };
+
+    const inputMessages = Array.isArray(body?.messages) ? body.messages : [];
+
+    // basic sanitization
+    const allowedRoles: Role[] = ["system", "user", "assistant"];
+    const sanitized: Message[] = inputMessages.filter(
+      (m): m is Message =>
+        m &&
+        typeof m.content === "string" &&
+        allowedRoles.includes(m.role as Role)
+    );
+
+    const openai = new OpenAI({ apiKey });
+
+    const systemMessages: Message[] = [
       { role: "system", content: SYSTEM_PROMPT },
-      { role: "system", content: makeKnowledgeSystemMessage(knowledge) }, // "KNOWLEDGE = <stringified ...>"
+      {
+        role: "system",
+        content: "KNOWLEDGE = " + JSON.stringify(knowledge),
+      },
     ];
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      messages: [...systemMessages, ...messages],
-      temperature: 0.4,
+      temperature: 0.7,
+      messages: [...systemMessages, ...sanitized],
     });
 
-    return NextResponse.json({ reply: completion.choices[0].message });
+    const reply = completion.choices?.[0]?.message?.content ?? "";
+
+    return NextResponse.json({ reply });
   } catch (err) {
-    console.error(err);
+    console.error("api/chat error:", err);
     return NextResponse.json(
       { error: "Something went wrong" },
       { status: 500 }
