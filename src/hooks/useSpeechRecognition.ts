@@ -35,15 +35,17 @@ export function useSpeechRecognition(opts: {
         recognitionRef.current.interimResults = true;
         recognitionRef.current.maxAlternatives = 1;
 
-        recognitionRef.current.onresult = (e: any) => {
+        recognitionRef.current.onresult = (e: SpeechRecognitionEvent) => {
           let finals = "";
           let interim = "";
+
           for (let i = e.resultIndex; i < e.results.length; i++) {
             const r = e.results[i];
             const tx = r[0].transcript;
             if (r.isFinal) finals += (finals ? " " : "") + tx;
             else interim += (interim ? " " : "") + tx;
           }
+
           if (finals) {
             finalRef.current = [finalRef.current, finals]
               .filter(Boolean)
@@ -58,7 +60,7 @@ export function useSpeechRecognition(opts: {
           opts.onInterim(live);
         };
 
-        recognitionRef.current.onerror = () => {
+        recognitionRef.current.onerror = (_e: SpeechRecognitionErrorEvent) => {
           setIsRecording(false);
         };
 

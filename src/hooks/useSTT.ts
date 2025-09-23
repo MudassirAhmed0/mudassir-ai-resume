@@ -38,7 +38,7 @@ export function useSTT(opts: {
         recognitionRef.current.interimResults = true;
         recognitionRef.current.maxAlternatives = 1;
 
-        recognitionRef.current.onresult = (e: any) => {
+        recognitionRef.current.onresult = (e: SpeechRecognitionEvent) => {
           let finals = "";
           let interim = "";
           for (let i = e.resultIndex; i < e.results.length; i++) {
