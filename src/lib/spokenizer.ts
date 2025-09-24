@@ -1,6 +1,11 @@
 // src/lib/spokenizer.ts
 import { MAX_SAY_SECONDS } from "@/lib/tts-config";
 
+export type NormalizeSayOpts = {
+  enforceCap?: boolean; // default true
+  addInvite?: boolean; // default true
+};
+
 /** Replace common verb phrases with spoken contractions (case-safe for leading letter). */
 function applyContractions(input: string): string {
   type Rule = [RegExp, (m: RegExpMatchArray) => string];
@@ -114,64 +119,70 @@ function splitSentences(text: string): string[] {
 const SECS_PER_WORD = 60 / 130;
 
 /** Build a normalized string respecting pause tags & time cap. */
-export function normalizeSay(input: string): string {
+export function normalizeSay(
+  input: string,
+  opts: NormalizeSayOpts = {}
+): string {
+  const enforceCap = opts.enforceCap ?? true;
+  const addInvite = opts.addInvite ?? true;
   const invite = "… Want the longer version?";
 
-  // 1) contractions
   let text = applyContractions(input);
-
-  // 2) acronym expansions
+  // expand acronyms first so CI/CD is protected
   text = expandAcronyms(text);
+  // replace remaining letter/space slashes with "and"
+  text = text.replace(
+    /([A-Za-z])\s*\/\s*(?=[A-Za-z])(?!C-I C-D\b)/g,
+    "$1 and "
+  );
 
-  // 3) tokenize by pause & sentence-split text tokens
   const tokens = tokenizeByPause(text);
-
-  type Piece = { kind: "text"; value: string } | { kind: "pause"; ms: number };
-  const pieces: Piece[] = [];
+  // sentence split…
+  const pieces: (
+    | { kind: "text"; value: string }
+    | { kind: "pause"; ms: number }
+  )[] = [];
   for (const t of tokens) {
-    if (t.kind === "pause") {
-      pieces.push(t);
-    } else {
-      const sentences = splitSentences(t.value);
-      for (const s of sentences) pieces.push({ kind: "text", value: s });
-    }
+    if (t.kind === "pause") pieces.push(t);
+    else
+      splitSentences(t.value).forEach((s) =>
+        pieces.push({ kind: "text", value: s })
+      );
   }
 
-  // 4) accumulate until MAX_SAY_SECONDS using words + pauses
+  const maxSecs = Math.max(1, MAX_SAY_SECONDS);
+  const SECS_PER_WORD = 60 / 130;
+
   let secs = 0;
-  const kept: Piece[] = [];
-  const maxSecs = Math.max(1, MAX_SAY_SECONDS); // safety
+  const kept: typeof pieces = [];
 
   for (const p of pieces) {
+    if (!enforceCap) {
+      kept.push(p);
+      continue;
+    }
     if (p.kind === "pause") {
       if (secs + p.ms / 1000 > maxSecs) break;
       kept.push(p);
       secs += p.ms / 1000;
     } else {
-      const words = p.value.split(/\s+/).filter(Boolean).length;
-      const add = words * SECS_PER_WORD;
+      const add = p.value.split(/\s+/).filter(Boolean).length * SECS_PER_WORD;
       if (secs + add > maxSecs) break;
       kept.push(p);
       secs += add;
     }
   }
 
-  const trimmed = kept.length < pieces.length;
+  const trimmed = enforceCap && kept.length < pieces.length;
 
-  // Recompose string (preserve pause tags)
-  let out = kept
+  let out = (enforceCap ? kept : pieces)
     .map((p) => (p.kind === "pause" ? `[pause-${p.ms}]` : p.value))
-    // tidy spaces around tags/sentences
     .join(" ")
     .replace(/\s*\[pause-(\d{2,4})\]\s*/g, " [pause-$1] ")
     .replace(/\s+/g, " ")
     .trim();
 
-  if (trimmed) {
-    // polite invitation if we had to cut
-    out = out.replace(/[.?!]*\s*$/, ""); // drop trailing punc if any
-    out += ` ${invite}`;
-  }
+  if (addInvite && trimmed) out = out.replace(/[.?!]*\s*$/, "") + ` ${invite}`;
   return out;
 }
 

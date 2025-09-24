@@ -18,6 +18,9 @@ Return ONLY a JSON object with exactly these fields:
   "show": string
 }
 
+Alignment rule: “say” must be a spoken rendering of “show”. 
+No new facts in “say”. Both tracks express the same content.
+
 Rules for "say":
 - 2–5 short sentences that SOUND SPOKEN, with casual interjections. Use contractions.
 - Insert [pause-300] or [pause-600] where natural.

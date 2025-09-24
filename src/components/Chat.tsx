@@ -11,6 +11,7 @@ import { requestChatReply } from "@/lib/chatApi";
 import type { ChatMessage } from "@/types/chat";
 import { speaker } from "@/lib/speaker";
 import { DEFAULT_VOICE_ID } from "@/lib/tts-config";
+import { normalizeSay } from "@/lib/spokenizer";
 
 /* ----------------------------- helpers & state ---------------------------- */
 
@@ -29,21 +30,56 @@ function saveVoiceId(id: string) {
 
 /** Robustly extract { say, show } from assistant string. */
 function safeParseAssistant(raw: string): { say: string; show: string } {
-  const trimmed = (raw || "").trim();
+  const text = (raw || "").trim();
 
-  // Try to locate a JSON object even if wrapped in code fences
-  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  const candidate = fenceMatch ? fenceMatch[1] : trimmed;
+  // Try code-fence
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)?.[1];
+  const candidates: string[] = [];
+  if (fenced) candidates.push(fenced);
 
-  try {
-    const parsed = JSON.parse(candidate);
-    const say = typeof parsed?.say === "string" ? parsed.say : trimmed;
-    const show = typeof parsed?.show === "string" ? parsed.show : trimmed;
-    return { say, show };
-  } catch {
-    // fallback: just mirror into show
-    return { say: trimmed, show: trimmed };
+  // Try whole string
+  candidates.push(text);
+
+  // Try extract the first balanced { ... } that contains "say" & "show"
+  const i = text.indexOf("{");
+  if (i !== -1) {
+    for (
+      let end = text.lastIndexOf("}");
+      end > i;
+      end = text.lastIndexOf("}", end - 1)
+    ) {
+      const slice = text.slice(i, end + 1);
+      if (slice.includes('"say"') && slice.includes('"show"')) {
+        candidates.push(slice);
+        break;
+      }
+    }
   }
+
+  for (const c of candidates) {
+    try {
+      const obj = JSON.parse(c);
+      let say = typeof obj?.say === "string" ? obj.say : "";
+      let show = typeof obj?.show === "string" ? obj.show : "";
+
+      // Clean show: strip pause tags if present
+      if (show)
+        show = show
+          .replace(/\s*\[pause-\d{2,4}\]\s*/gi, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+
+      if (say || show) {
+        if (!say) say = show;
+        if (!show) show = say.replace(/\s*\[pause-\d{2,4}\]\s*/gi, " ").trim();
+        return { say, show };
+      }
+    } catch {}
+  }
+
+  // Fallback
+  const clean = text.replace(/\s*\[pause-\d{2,4}\]\s*/gi, " ").trim();
+  return { say: text, show: clean };
 }
 
 /* -------------------------------- component ------------------------------- */
@@ -106,8 +142,10 @@ export default function Chat({
         const reply = await requestChatReply(history);
 
         // Parse assistant JSON safely
-        const { say, show } = safeParseAssistant(reply);
+        const parsed = safeParseAssistant(reply);
+        let show = parsed.show.replace(/\s*\[pause-\d{2,4}\]\s*/gi, " ").trim();
 
+        const say = normalizeSay(show, { enforceCap: false, addInvite: false });
         // Render "show" in bubble
         const aiMsg: ChatMessage = { role: "assistant", content: show };
         addMessage(aiMsg);
@@ -115,7 +153,7 @@ export default function Chat({
         // Speak "say" via ElevenLabs Speaker (queue-aware)
         const useVoice = getSavedVoiceId() || voiceId || DEFAULT_VOICE_ID;
         setVoiceId(useVoice); // persist last used
-        await speaker.speak({ say, voiceId: useVoice });
+        await speaker.speak({ say, voiceId: useVoice, noCap: true });
       } catch {
         addMessage({
           role: "assistant",

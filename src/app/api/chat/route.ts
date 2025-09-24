@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
 import knowledge from "@/data/knowledge.json";
 import { SYSTEM_PROMPT } from "@/lib/prompt";
+import { ChatCompletionMessageParam } from "openai/resources";
 
 type Role = "user" | "assistant"; // ← disallow client 'system' injection
 type Message = { role: Role; content: string };
@@ -30,14 +31,35 @@ export async function POST(req: NextRequest) {
     );
 
     const openai = new OpenAI({ apiKey });
-
+    const messages: ChatCompletionMessageParam[] = [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: "KNOWLEDGE = " + JSON.stringify(knowledge) },
+      ...(body.messages ?? []), // assuming you parsed the POST body
+    ];
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0.7,
+      max_tokens: 600,
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "mudassir_tracks",
+          strict: true,
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            required: ["say", "show"],
+            properties: {
+              say: { type: "string", maxLength: 600 }, // ~90 words cap
+              show: { type: "string", maxLength: 800 }, // concise, but room for bullets
+            },
+          },
+        },
+      },
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         { role: "system", content: "KNOWLEDGE = " + JSON.stringify(knowledge) },
-        ...sanitized,
+        ...messages,
       ],
     });
 
