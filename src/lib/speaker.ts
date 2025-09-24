@@ -343,6 +343,10 @@ export class Speaker {
     });
   }
 
+  public getAnalyser(): AnalyserNode | null {
+    return this.analyser;
+  }
+
   private async buildAnalyser(el: HTMLMediaElement) {
     try {
       this.ctx = new (window.AudioContext ||

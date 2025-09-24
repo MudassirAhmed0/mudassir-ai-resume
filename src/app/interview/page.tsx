@@ -3,12 +3,10 @@
 import Avatar from "@/components/Avatar";
 import Chat from "@/components/Chat";
 import QuickChips from "@/components/QuickChips";
-import { useSpeakingRaf } from "@/hooks/useSpeakingRaf";
 import { useConversationSeed } from "@/hooks/useConversationSeed";
 import { useQuickAsk } from "@/hooks/useQuickAsk";
-import { useTTSBoot } from "@/hooks/useTTSBoot";
-
-const CONVERSATION_ID = "default";
+import { speaker } from "@/lib/speaker";
+import { useEffect, useState } from "react";
 
 const CHIPS = [
   "Show projects",
@@ -18,28 +16,41 @@ const CHIPS = [
 ];
 
 export default function InterviewPage() {
-  useTTSBoot({ debug: true });
-  const speaking = useSpeakingRaf();
-
-  // Seed greeting if first visit, and get a key to remount Chat after storage mutations
   const { chatKey, remountChat } = useConversationSeed({
-    conversationId: CONVERSATION_ID,
+    conversationId: "default",
   });
+  const { askQuick, loading } = useQuickAsk("default");
 
-  // Quick-ask auto-sends and writes into the same conversation storage
-  const { askQuick, loading } = useQuickAsk(CONVERSATION_ID);
+  const [speaking, setSpeaking] = useState(false);
+  const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
+
+  // Mirror speaker state without stealing its handlers
+  useEffect(() => {
+    let raf = 0;
+    const tick = () => {
+      const a = speaker.getAnalyser();
+      setAnalyser(a);
+      setSpeaking(!!a); // speaking while analyser is active
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
   const handleChip = async (label: string) => {
     await askQuick(label);
-    remountChat(); // ensure Chat reloads the latest messages
+    remountChat();
   };
 
   return (
     <div className="min-h-screen grid grid-cols-1 md:grid-cols-[320px_1fr]">
-      {/* Left column: avatar + quick chips */}
       <aside className="border-b md:border-b-0 md:border-r bg-white">
         <div className="p-6 flex flex-col items-center gap-4">
-          <Avatar speaking={speaking} size={96} />
+          <Avatar
+            speaking={speaking}
+            analyser={analyser ?? undefined}
+            size={96}
+          />
           <div className="text-center">
             <h2 className="font-semibold">Mudassir (AI)</h2>
             <p className="text-sm text-muted-foreground">
@@ -50,9 +61,8 @@ export default function InterviewPage() {
         </div>
       </aside>
 
-      {/* Right column: Chat */}
       <main className="bg-white">
-        <Chat key={chatKey} conversationId={CONVERSATION_ID} />
+        <Chat key={chatKey} conversationId="default" />
       </main>
     </div>
   );

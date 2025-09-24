@@ -1,7 +1,7 @@
 // ElevenLabs + TTS runtime config
 
 /** Default voice (can be overridden from UI/state) */
-export const DEFAULT_VOICE_ID = "Mark"; // placeholder
+export const DEFAULT_VOICE_ID = "1SM7GgM6IMuvQlz2BwM3"; // placeholder
 
 /** ElevenLabs model (keep editable) */
 export const ELEVEN_MODEL_ID = "1SM7GgM6IMuvQlz2BwM3";
