@@ -1,30 +1,63 @@
+// src/components/Chat.tsx
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import ChatHeader from "@/components/chat/ChatHeader";
-import ChatList from "@/components/chat/ChatList";
-import InputBar from "@/components/chat/InputBar";
-import { usePersistentChat } from "@/hooks/usePersistentChat";
-import { useAutoScroll } from "@/hooks/useAutoScroll";
-import { useSTT } from "@/hooks/useSTT";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { requestChatReply } from "@/lib/chatApi";
-import type { ChatMessage } from "@/types/chat";
-import { speaker } from "@/lib/speaker";
-import { DEFAULT_VOICE_ID } from "@/lib/tts-config";
 import { normalizeSay } from "@/lib/spokenizer";
+import { speaker } from "@/lib/speaker";
+import { useSTT } from "@/hooks/useSTT";
+import { useSettings } from "@/hooks/useSettings";
+import { cn } from "@/lib/utils"; // if you don't have cn, replace with className strings
+import SettingsDrawer from "@/components/SettingsDrawer";
 
-/* ----------------------------- helpers & state ---------------------------- */
+type ChatMessage = {
+  role: "user" | "assistant" | "system";
+  content: string;
+};
 
-const VOICE_LS_KEY = "tts:voiceId";
+type Props = {
+  conversationId?: string;
+  onMessage?: (msg: ChatMessage) => void;
+  resumeHref?: string; // download link
+};
 
-function getSavedVoiceId(): string {
-  if (typeof window === "undefined") return DEFAULT_VOICE_ID;
-  return localStorage.getItem(VOICE_LS_KEY) || DEFAULT_VOICE_ID;
+const STORAGE_PREFIX = "ai-chat:";
+const DRAFT_KEY_PREFIX = "ai-chat:draft:";
+
+function storageKey(id: string) {
+  return `${STORAGE_PREFIX}${id}`;
 }
 
-function saveVoiceId(id: string) {
+function readMessages(id: string): ChatMessage[] {
+  if (typeof window === "undefined") return [];
   try {
-    localStorage.setItem(VOICE_LS_KEY, id);
+    const raw = localStorage.getItem(storageKey(id));
+    const parsed = raw ? (JSON.parse(raw) as ChatMessage[]) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeMessages(id: string, msgs: ChatMessage[]) {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(storageKey(id), JSON.stringify(msgs));
+  } catch {}
+}
+
+function readDraft(id: string) {
+  if (typeof window === "undefined") return "";
+  return localStorage.getItem(DRAFT_KEY_PREFIX + id) || "";
+}
+
+function writeDraft(id: string, text: string) {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(DRAFT_KEY_PREFIX + id, text);
   } catch {}
 }
 
@@ -82,37 +115,32 @@ function safeParseAssistant(raw: string): { say: string; show: string } {
   return { say: text, show: clean };
 }
 
-/* -------------------------------- component ------------------------------- */
-
-type Props = {
-  conversationId?: string;
-  showHeader?: boolean;
-  resumeHref?: string;
-};
+function isOutOfScope(text: string) {
+  const t = text.toLowerCase();
+  return (
+    t.includes("i’m here as my professional avatar") ||
+    t.includes("i'm here as my professional avatar")
+  );
+}
 
 export default function Chat({
   conversationId = "default",
-  showHeader = true,
+  onMessage,
   resumeHref = "/resume.pdf",
 }: Props) {
-  const { messages, addMessage } = usePersistentChat(conversationId);
-  const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [speaking, setSpeaking] = useState(false);
-  const [voiceId, setVoiceId] = useState<string>(() => getSavedVoiceId());
+  // settings (voice/fallback/casualness)
+  const { settings } = useSettings();
 
+  // mirror fallback toggle into speaker
   useEffect(() => {
-    saveVoiceId(voiceId);
-  }, [voiceId]);
+    speaker.setFallbackEnabled(settings.fallback);
+  }, [settings.fallback]);
 
-  // Hook speaker events to UI
+  // speaking state (driven by speaker)
+  const [speaking, setSpeaking] = useState(false);
   useEffect(() => {
     speaker.onStart = () => setSpeaking(true);
     speaker.onEnd = () => setSpeaking(false);
-    // Optional: drive CSS var from analyser via onBoundary if you want
-    // speaker.onBoundary = ({ energy }) => {
-    //   document.documentElement.style.setProperty("--vu", energy.toFixed(3));
-    // };
     return () => {
       speaker.onStart = null;
       speaker.onEnd = null;
@@ -120,7 +148,47 @@ export default function Chat({
     };
   }, []);
 
-  const endRef = useAutoScroll([messages, loading, speaking]);
+  // messages
+  const [messages, setMessages] = useState<ChatMessage[]>(() =>
+    readMessages(conversationId)
+  );
+  const [input, setInput] = useState<string>(() => readDraft(conversationId));
+  const [loading, setLoading] = useState(false);
+
+  // persist
+  useEffect(() => {
+    writeMessages(conversationId, messages);
+  }, [conversationId, messages]);
+  useEffect(() => {
+    writeDraft(conversationId, input);
+  }, [conversationId, input]);
+
+  // auto scroll
+  const endRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages, loading, speaking]);
+
+  // STT
+  const stt = useSTT({
+    onInterim: setInput,
+    onFinalSubmit: async (finalText: string) => {
+      if (!finalText) return;
+      await send(finalText);
+    },
+    debounceMs: 1200,
+  });
+
+  const addMessage = useCallback(
+    (m: ChatMessage) => {
+      setMessages((prev) => {
+        const next = [...prev, m];
+        onMessage?.(m);
+        return next;
+      });
+    },
+    [onMessage]
+  );
 
   const send = useCallback(
     async (override?: string) => {
@@ -128,34 +196,48 @@ export default function Chat({
       const content = (override ?? input).trim();
       if (!content) return;
 
-      // barge-in: cancel any current TTS before sending
+      // barge-in: cancel any ongoing TTS
       speaker.cancel();
 
       const userMsg: ChatMessage = { role: "user", content };
       const history = [...messages, userMsg];
-
       addMessage(userMsg);
       setInput("");
       setLoading(true);
 
       try {
-        const reply = await requestChatReply(history);
+        // add casualness hint as a system meta
+        const historyWithMeta = [
+          ...history,
+          {
+            role: "system",
+            content: `CASUALNESS_HINT=${settings.casualness}`, // Light|Normal|Spicy
+          } as ChatMessage,
+        ];
+
+        const reply = await requestChatReply(historyWithMeta);
 
         // Parse assistant JSON safely
         const parsed = safeParseAssistant(reply);
-        const show = parsed.show
-          .replace(/\s*\[pause-\d{2,4}\]\s*/gi, " ")
-          .trim();
 
+        // Source of truth: what we show
+        let show = parsed.show.replace(/\s*\[pause-\d{2,4}\]\s*/gi, " ").trim();
+        if (!show)
+          show = parsed.say.replace(/\s*\[pause-\d{2,4}\]\s*/gi, " ").trim();
+
+        // Speak exactly what's shown (spokenized), no cap, no invite
         const say = normalizeSay(show, { enforceCap: false, addInvite: false });
-        // Render "show" in bubble
+
+        // Render bubble
         const aiMsg: ChatMessage = { role: "assistant", content: show };
         addMessage(aiMsg);
 
-        // Speak "say" via ElevenLabs Speaker (queue-aware)
-        const useVoice = getSavedVoiceId() || voiceId || DEFAULT_VOICE_ID;
-        setVoiceId(useVoice); // persist last used
-        await speaker.speak({ say, voiceId: useVoice, noCap: true });
+        // TTS
+        await speaker.speak({
+          say,
+          voiceId: settings.voiceId,
+          noCap: true,
+        });
       } catch {
         addMessage({
           role: "assistant",
@@ -166,51 +248,134 @@ export default function Chat({
         setLoading(false);
       }
     },
-    [addMessage, input, loading, messages, voiceId]
+    [
+      addMessage,
+      input,
+      loading,
+      messages,
+      settings.casualness,
+      settings.voiceId,
+    ]
   );
 
-  // STT — stream interim; submit on final (debounced inside hook)
-  const stt = useSTT({
-    onInterim: setInput,
-    onFinalSubmit: async (finalText) => {
-      if (!finalText) return;
-      await send(finalText);
-    },
-  });
-
-  // Barge-in: if user taps mic while speaking, cancel current audio first
   const toggleMic = useCallback(() => {
+    // barge-in if speaking
     if (speaking) speaker.cancel();
     if (!stt.supported || loading) return;
     stt.toggle(input);
   }, [input, loading, speaking, stt]);
 
-  // Also barge-in: if user types & hits Enter/send while TTS is playing,
-  // speaker.cancel() is already called inside send() above.
-
-  const disableInput = useMemo(() => loading, [loading]);
+  // UI bits
+  const isSendingDisabled = loading;
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      void send();
+    }
+  };
 
   return (
     <div className="flex h-[100dvh] max-h-screen flex-col">
-      {showHeader && <ChatHeader speaking={speaking} resumeHref={resumeHref} />}
+      {/* Header */}
+      <div className="flex items-center gap-2 border-b px-4 py-2">
+        <div className="text-sm font-medium">Mudassir AI — Interview</div>
+        <div className="ml-auto flex items-center gap-2">
+          <a
+            href={resumeHref}
+            target="_blank"
+            rel="noreferrer"
+            className="text-sm underline underline-offset-4 text-primary hover:opacity-80"
+          >
+            Download Resume (PDF)
+          </a>
+          <SettingsDrawer />
+        </div>
+      </div>
 
-      <ChatList
-        messages={messages}
-        loading={loading}
-        speaking={speaking}
-        endRef={endRef}
-      />
+      {/* Messages */}
+      <ScrollArea className="flex-1">
+        <div className="mx-auto w-full max-w-3xl px-4 py-4">
+          {messages.map((m, idx) => {
+            const isUser = m.role === "user";
+            const showScope = !isUser && isOutOfScope(m.content);
 
-      <InputBar
-        value={input}
-        onChange={setInput}
-        onSend={() => void send()}
-        disabled={disableInput}
-        sttSupported={stt.supported}
-        sttRecording={stt.isRecording}
-        onToggleMic={toggleMic}
-        speaking={speaking}
-      />
+            return (
+              <div
+                key={idx}
+                className={cn(
+                  "mb-3 flex w-full",
+                  isUser ? "justify-end" : "justify-start"
+                )}
+              >
+                <div
+                  className={cn(
+                    "rounded-2xl px-3 py-2 text-sm max-w-[85%] leading-relaxed",
+                    isUser
+                      ? "bg-primary text-primary-foreground rounded-br-sm"
+                      : "bg-muted text-foreground rounded-bl-sm"
+                  )}
+                >
+                  {m.content}
+                  {!isUser && showScope && (
+                    <div className="mt-1">
+                      <span className="inline-flex items-center rounded-full bg-amber-100 text-amber-800 px-2 py-0.5 text-[10px]">
+                        professional topics only
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+
+          {/* Typing indicator */}
+          {loading && (
+            <div className="mb-3 flex w-full justify-start">
+              <div className="rounded-2xl rounded-bl-sm bg-muted px-3 py-2">
+                <div className="flex items-center gap-1">
+                  <span className="sr-only">Typing</span>
+                  <span className="inline-block h-2 w-2 animate-bounce rounded-full bg-foreground/50 [animation-delay:-0.2s]" />
+                  <span className="inline-block h-2 w-2 animate-bounce rounded-full bg-foreground/50 [animation-delay:-0.1s]" />
+                  <span className="inline-block h-2 w-2 animate-bounce rounded-full bg-foreground/50" />
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div ref={endRef} />
+        </div>
+      </ScrollArea>
+
+      {/* Input row */}
+      <div className="border-t px-3 py-2">
+        <div className="mx-auto flex max-w-3xl items-center gap-2">
+          <Button
+            type="button"
+            variant={stt.isRecording ? "destructive" : "secondary"}
+            onClick={toggleMic}
+            className={cn(stt.isRecording && "animate-pulse")}
+            title={stt.isRecording ? "Stop mic" : "Start mic"}
+          >
+            {stt.isRecording ? "Stop" : "Mic"}
+          </Button>
+
+          <Input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="Ask about roles, projects, trade-offs…"
+            disabled={isSendingDisabled}
+          />
+
+          <Button
+            type="button"
+            onClick={() => void send()}
+            disabled={isSendingDisabled}
+          >
+            Send
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

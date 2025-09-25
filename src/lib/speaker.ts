@@ -5,26 +5,21 @@ import { ttsCacheKey } from "@/lib/hash";
 import { DEFAULT_VOICE_ID, MAX_SAY_SECONDS } from "@/lib/tts-config";
 import { speak as webSpeak, cancelSpeech as webCancel } from "@/lib/speech";
 
-/* ----------------------------------------------------------------------------
- * Types
- * --------------------------------------------------------------------------*/
-
+/** Energy/progress sample emitted ~30fps while audio is playing. */
 export type Boundary = {
-  /** 0..1 playback progress (best-effort) */
-  progress: number;
-  /** 0..1 energy estimate (RMS from analyser or synthetic) */
-  energy: number;
+  progress: number; // 0..1
+  energy: number; // 0..1 (RMS)
 };
 
 type SpeakItem = {
   say: string;
   voiceId?: string;
-  /** If true, do not trim/shorten text for cost control. */
+  /** If true, skip length cap on the text sent to TTS (no truncation). */
   noCap?: boolean;
 };
 
 /* ----------------------------------------------------------------------------
- * IndexedDB cache (blob)
+ * IndexedDB cache (Blob)
  * --------------------------------------------------------------------------*/
 
 const DB_NAME = "tts-cache";
@@ -73,12 +68,12 @@ async function idbSet(key: string, blob: Blob): Promise<void> {
       r.onerror = () => reject(r.error ?? new Error("idb set error"));
     });
   } catch {
-    // ignore; we'll try LS fallback
+    // ignore
   }
 }
 
 /* ----------------------------------------------------------------------------
- * localStorage fallback (base64) — only for small blobs
+ * localStorage fallback (base64) — small blobs only
  * --------------------------------------------------------------------------*/
 
 const LS_PREFIX = "tts-audio:";
@@ -122,7 +117,7 @@ async function lsSet(key: string, blob: Blob) {
 }
 
 /* ----------------------------------------------------------------------------
- * Speaker
+ * Speaker (singleton)
  * --------------------------------------------------------------------------*/
 
 export class Speaker {
@@ -137,15 +132,24 @@ export class Speaker {
   private source: MediaElementAudioSourceNode | null = null;
   private _analyser: AnalyserNode | null = null;
 
-  /** Callbacks */
+  private vuTimer: number | null = null;
+  private fallbackEnabled = true;
+
+  /** Hooks */
   public onStart: (() => void) | null = null;
   public onEnd: (() => void) | null = null;
   public onBoundary: ((b: Boundary) => void) | null = null;
 
-  /** ~30fps boundary/energy loop */
-  private vuTimer: number | null = null;
+  /** Public controls ------------------------------------------------------- */
 
-  /** Enqueue a line to speak (queue-safe) */
+  setFallbackEnabled(v: boolean) {
+    this.fallbackEnabled = !!v;
+  }
+
+  getAnalyser(): AnalyserNode | null {
+    return this._analyser;
+  }
+
   async speak({ say, voiceId, noCap }: SpeakItem): Promise<void> {
     if (this.destroyed) return;
     const trimmed = (say ?? "").trim();
@@ -160,34 +164,29 @@ export class Speaker {
     if (!this.playing) void this.processQueue();
   }
 
-  /** Stop current playback and clear queue */
   cancel() {
-    // timers
     if (this.vuTimer) {
       window.clearInterval(this.vuTimer);
       this.vuTimer = null;
     }
 
-    // network
     try {
       this.controller?.abort();
     } catch {}
     this.controller = null;
 
-    // audio element
     try {
       this.audioEl?.pause();
-      if (this.audioEl?.src.startsWith("blob:"))
+      if (this.audioEl?.src?.startsWith("blob:")) {
         URL.revokeObjectURL(this.audioEl.src);
+      }
     } catch {}
     this.audioEl = null;
 
-    // web audio
     this.teardownAnalyser();
 
-    // speech fallback
     try {
-      webCancel();
+      webCancel?.();
     } catch {}
 
     this.queue = [];
@@ -200,12 +199,7 @@ export class Speaker {
     this.cancel();
   }
 
-  /** Analyser for visualizers */
-  public getAnalyser(): AnalyserNode | null {
-    return this._analyser;
-  }
-
-  /* ------------------------------- internals ------------------------------ */
+  /** Internals ------------------------------------------------------------ */
 
   private async processQueue() {
     if (this.playing || this.destroyed) return;
@@ -222,25 +216,28 @@ export class Speaker {
 
     try {
       const key = await ttsCacheKey(item.voiceId || DEFAULT_VOICE_ID, safeSay);
+
       let blob = await idbGet(key);
       if (!blob) blob = lsGet(key);
 
       if (!blob) {
         blob = await this.fetchTTS(safeSay, item.voiceId, item.noCap === true);
         if (blob) {
-          // cache best-effort
-          idbSet(key, blob).catch(() => {});
-          lsSet(key, blob).catch(() => {});
+          // best-effort cache
+          void idbSet(key, blob);
+          void lsSet(key, blob);
         }
       }
 
       if (blob) {
         await this.playBlob(blob, safeSay);
-      } else {
+      } else if (this.fallbackEnabled) {
         await this.fallbackSpeak(safeSay);
       }
     } catch {
-      await this.fallbackSpeak(safeSay);
+      if (this.fallbackEnabled) {
+        await this.fallbackSpeak(safeSay);
+      }
     }
 
     this.playing = false;
@@ -277,7 +274,6 @@ export class Speaker {
   }
 
   private async playBlob(blob: Blob, sayForProgress: string): Promise<void> {
-    // stop any existing
     try {
       this.audioEl?.pause();
     } catch {}
@@ -294,9 +290,11 @@ export class Speaker {
     try {
       await el.play();
     } catch {
-      // Autoplay failed → fallback to Web Speech
+      // Autoplay blocked → fallback
       URL.revokeObjectURL(url);
-      await this.fallbackSpeak(sayForProgress);
+      if (this.fallbackEnabled) {
+        await this.fallbackSpeak(sayForProgress);
+      }
       return;
     }
 
@@ -320,8 +318,8 @@ export class Speaker {
   private async buildAnalyser(el: HTMLMediaElement) {
     try {
       this.ctx = new (window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext })
-          .webkitAudioContext)();
+        // @ts-expect-error - webkit prefix in Safari
+        window.webkitAudioContext)();
       this.source = this.ctx.createMediaElementSource(el);
       this._analyser = this.ctx.createAnalyser();
       this._analyser.fftSize = 2048;
@@ -349,11 +347,11 @@ export class Speaker {
 
   private startVuLoop(audio: HTMLAudioElement, fallbackText: string) {
     if (!this._analyser) {
-      // synthetic if analyser missing
-      const started = performance.now();
+      // synthetic animation if analyser missing
+      const start = performance.now();
       const totalMs = Math.min(MAX_SAY_SECONDS * 1000, 15000);
       this.vuTimer = window.setInterval(() => {
-        const t = performance.now() - started;
+        const t = performance.now() - start;
         const progress = Math.min(1, t / totalMs);
         const energy = 0.25 + 0.15 * Math.sin((t / 180) * Math.PI);
         this.onBoundary?.({ progress, energy });
@@ -361,18 +359,21 @@ export class Speaker {
       return;
     }
 
-    const bufRef: { current: Uint8Array | null } = { current: null };
+    const bufRef = { current: null as Uint8Array | null };
     this.vuTimer = window.setInterval(() => {
       // progress
       const dur =
         audio.duration ||
         Math.max(3, fallbackText.split(/\s+/).length / (130 / 60));
-      const p = (audio.currentTime || 0) / (dur || 1);
-      const progress = Math.min(1, Math.max(0, p));
+      const progress = Math.min(
+        1,
+        Math.max(0, (audio.currentTime || 0) / (dur || 1))
+      );
 
       // energy from time-domain RMS
-      if (!bufRef.current)
+      if (!bufRef.current) {
         bufRef.current = new Uint8Array(this._analyser!.fftSize);
+      }
       const buf = bufRef.current!;
       this._analyser!.getByteTimeDomainData(
         buf as unknown as Uint8Array<ArrayBuffer>
@@ -391,12 +392,11 @@ export class Speaker {
   }
 
   private async fallbackSpeak(text: string): Promise<void> {
-    // synthetic boundary loop so visuals still move
-    const started = performance.now();
+    const start = performance.now();
     const totalMs = Math.min(MAX_SAY_SECONDS * 1000, 15000);
     if (!this.vuTimer) {
       this.vuTimer = window.setInterval(() => {
-        const t = performance.now() - started;
+        const t = performance.now() - start;
         const progress = Math.min(1, t / totalMs);
         const energy = 0.25 + 0.15 * Math.sin((t / 160) * Math.PI);
         this.onBoundary?.({ progress, energy });
@@ -438,7 +438,5 @@ export class Speaker {
   }
 }
 
-/* ----------------------------------------------------------------------------
- * Singleton
- * --------------------------------------------------------------------------*/
+/** Singleton instance */
 export const speaker = new Speaker();
