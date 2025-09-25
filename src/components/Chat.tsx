@@ -143,7 +143,9 @@ export default function Chat({
 
         // Parse assistant JSON safely
         const parsed = safeParseAssistant(reply);
-        let show = parsed.show.replace(/\s*\[pause-\d{2,4}\]\s*/gi, " ").trim();
+        const show = parsed.show
+          .replace(/\s*\[pause-\d{2,4}\]\s*/gi, " ")
+          .trim();
 
         const say = normalizeSay(show, { enforceCap: false, addInvite: false });
         // Render "show" in bubble

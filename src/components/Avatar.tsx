@@ -47,7 +47,7 @@ export default function Avatar({
     const el = rootRef.current;
     if (!el) return;
 
-    let running = true;
+    const running = true;
     let last = 0;
 
     const tick = () => {
