@@ -263,11 +263,20 @@ export default function Chat({
 
   // hook speaker notices -> toast
   useEffect(() => {
-    speaker.onNotice = (msg) => toast({ description: msg });
-    return () => {
-      speaker.onNotice = null;
+    speaker.onNotice = (msg) => {
+      // 1) surface the notice
+      toast({ description: msg });
+
+      // 2) transiently force fallback if ElevenLabs is busy / rate-limited
+      if (/(busy|unavailable|rate|429|server|timeout)/i.test(msg)) {
+        const prev = settings.fallback;
+        speaker.setFallbackEnabled(true);      // switch new chunks to WebSpeech
+        // auto-restore user setting after a short window
+        window.setTimeout(() => speaker.setFallbackEnabled(prev), 15000);
+      }
     };
-  }, [toast]);
+    return () => { speaker.onNotice = null; };
+  }, [toast, settings.fallback]);
 
   // listen to usage changes
   useEffect(() => {
@@ -421,10 +430,14 @@ export default function Chat({
     }
   }, [stt.isRecording, isSpeaking]);
 
+  // SSE hiccup chip state
+  const [hiccupMsgIdx, setHiccupMsgIdx] = useState<number | null>(null);
+
   const addMessage = useCallback(
-    (m: ChatMessage) => {
+    (m: ChatMessage, opts?: { markHiccup?: boolean }) => {
       setMessages((prev) => {
         const next = [...prev, m];
+        if (opts?.markHiccup) setHiccupMsgIdx(next.length - 1);
         onMessage?.(m);
         return next;
       });
@@ -500,14 +513,11 @@ export default function Chat({
         onError: () => {
           isStreamingRef.current = false;
           streamCancelRef.current = null;
-          dispatch({ type: "STREAM_DONE" }); // treat as ended so we return to Listening
-          const aiMsg: ChatMessage = {
-            role: "assistant",
-            content: "⚠️ Stream error",
-          };
-          addMessage(aiMsg);
-          setLiveCommitted("");
-          setLiveTail("");
+          dispatch({ type: "STREAM_DONE" });
+          // finalize with whatever we have so far
+          const finalSoFar = (liveCommitted + liveTail).trim() || "…";
+          addMessage({ role: "assistant", content: finalSoFar }, { markHiccup: true });
+          setLiveCommitted(""); setLiveTail("");
         },
       });
 
@@ -631,15 +641,10 @@ export default function Chat({
           onError: (err) => {
             isStreamingRef.current = false;
             streamCancelRef.current = null;
-
-            const aiMsg: ChatMessage = {
-              role: "assistant",
-              content: `⚠️ ${err}`,
-            };
-            addMessage(aiMsg);
+            const finalSoFar = (liveCommitted + liveTail).trim() || `⚠️ ${err}`;
+            addMessage({ role: "assistant", content: finalSoFar }, { markHiccup: true });
             setLiveId(null);
-            setLiveCommitted("");
-            setLiveTail("");
+            setLiveCommitted(""); setLiveTail("");
           },
         });
 
@@ -735,6 +740,7 @@ export default function Chat({
           {messages.map((m, idx) => {
             const isUser = m.role === "user";
             const showScope = !isUser && isOutOfScope(m.content);
+            const showHiccup = !isUser && hiccupMsgIdx === idx;
 
             return (
               <div
@@ -753,6 +759,20 @@ export default function Chat({
                   )}
                 >
                   {m.content}
+                  {!isUser && (showScope || showHiccup) && (
+                    <div className="mt-1 flex gap-1">
+                      {showScope && (
+                        <span className="inline-flex items-center rounded-full bg-amber-100 text-amber-800 px-2 py-0.5 text-[10px]">
+                          professional topics only
+                        </span>
+                      )}
+                      {showHiccup && (
+                        <span className="inline-flex items-center rounded-full bg-blue-100 text-blue-800 px-2 py-0.5 text-[10px]">
+                          network hiccup — partial
+                        </span>
+                      )}
+                    </div>
+                  )}
                   {!isUser && showScope && (
                     <div className="mt-1">
                       <span className="inline-flex items-center rounded-full bg-amber-100 text-amber-800 px-2 py-0.5 text-[10px]">
