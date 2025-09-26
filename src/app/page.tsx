@@ -14,9 +14,17 @@ export default function HomePage() {
           <h1 className="text-2xl font-bold text-center">
             Mudassir AI Resume Interview
           </h1>
-          <Button onClick={() => router.push("/interview")}>
-            Start Interview
-          </Button>
+          <div className="flex flex-col gap-3 w-full">
+            <Button onClick={() => router.push("/interview")}>
+              Start Interview
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => router.push("/voice-chat")}
+            >
+              Voice Chat Mode
+            </Button>
+          </div>
         </CardContent>
       </Card>
     </div>
