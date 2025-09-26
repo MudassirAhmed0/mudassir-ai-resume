@@ -12,6 +12,7 @@ import {
 } from "@/lib/streamChat";
 import { normalizeSay } from "@/lib/spokenizer";
 import { speaker } from "@/lib/speaker";
+import { createSegmenter } from "@/lib/segmenter";
 import { useSTT } from "@/hooks/useSTT";
 import { useSettings } from "@/hooks/useSettings";
 import { cn } from "@/lib/utils"; // if you don't have cn, replace with className strings
@@ -180,7 +181,11 @@ export default function Chat({
 
   // streaming state
   const [liveId, setLiveId] = useState<string | null>(null);
-  const [liveText, setLiveText] = useState("");
+  const [liveCommitted, setLiveCommitted] = useState("");
+  const [liveTail, setLiveTail] = useState("");
+
+  // segmenter for real-time TTS
+  const segRef = useRef(createSegmenter());
 
   // persist
   useEffect(() => {
@@ -192,6 +197,7 @@ export default function Chat({
 
   // auto scroll
   const endRef = useRef<HTMLDivElement | null>(null);
+  const liveText = liveCommitted + liveTail;
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, loading, speaking, liveText]);
@@ -235,7 +241,11 @@ export default function Chat({
       // Add a live bubble placeholder
       const id = crypto.randomUUID();
       setLiveId(id);
-      setLiveText("");
+      setLiveCommitted("");
+      setLiveTail("");
+
+      // Reset segmenter for new message
+      segRef.current = createSegmenter();
 
       try {
         // system hints
@@ -257,36 +267,59 @@ export default function Chat({
           messages: streamMessages,
           temperature: 0.7,
           onToken: (token) => {
-            setLiveText((prev) => prev + token);
+            const { ready, rest } = segRef.current.push(token);
+
+            if (ready.length) {
+              // 1) Append finalized pieces to the bubble immediately
+              const appended = ready.join("");
+              setLiveCommitted((prev) => prev + appended);
+
+              // 2) Enqueue TTS for each finalized segment
+              for (const seg of ready) {
+                const say = normalizeSay(seg, {
+                  enforceCap: false,
+                  addInvite: false,
+                });
+                speaker.speak({ say, noCap: true });
+              }
+            }
+
+            // 3) Show current tail as the live-typing remainder
+            setLiveTail(rest);
           },
           onDone: async (raw) => {
-            // Replace live bubble with final assistant message
-            let show = raw.show || liveText;
-            let say = raw.say || show;
+            // Flush any remainder as the last segment
+            const leftover = segRef.current.flush();
+            if (leftover.length) {
+              const tailSeg = leftover.join("");
+              setLiveCommitted((prev) => prev + tailSeg);
+              // Optionally send the final tail to TTS, too:
+              const say = normalizeSay(tailSeg, {
+                enforceCap: false,
+                addInvite: false,
+              });
+              speaker.speak({ say, noCap: true });
+            }
 
-            // Clean up pause tags
-            show = show.replace(/\s*\[pause-\d{2,4}\]\s*/gi, " ").trim();
-            say = say.replace(/\s*\[pause-\d{2,4}\]\s*/gi, " ").trim();
-
-            // derive spoken track from what we show
-            const wantCapInvite = meta?.CAP_POLICY === "cap+invite";
-            const normalizedSay = normalizeSay(show, {
-              enforceCap: wantCapInvite ? true : false,
-              addInvite: wantCapInvite ? true : false,
-            });
-
-            // Render bubble
-            const aiMsg: ChatMessage = { role: "assistant", content: show };
+            const finalShow = raw?.show ?? liveCommitted + liveTail;
+            const aiMsg: ChatMessage = {
+              role: "assistant",
+              content: finalShow,
+            };
             addMessage(aiMsg);
             setLiveId(null);
-            setLiveText("");
+            setLiveCommitted("");
+            setLiveTail("");
 
-            // TTS
-            await speaker.speak({
-              say: normalizedSay,
-              voiceId: settings.voiceId,
-              noCap: !wantCapInvite, // if we asked for cap+invite, let TTS cap too
-            });
+            // Also speak the canonical `raw.say` if provided (preferred):
+            if (raw?.say) {
+              const wantCapInvite = meta?.CAP_POLICY === "cap+invite";
+              await speaker.speak({
+                say: raw.say,
+                voiceId: settings.voiceId,
+                noCap: !wantCapInvite,
+              });
+            }
           },
           onError: (err) => {
             const aiMsg: ChatMessage = {
@@ -295,7 +328,8 @@ export default function Chat({
             };
             addMessage(aiMsg);
             setLiveId(null);
-            setLiveText("");
+            setLiveCommitted("");
+            setLiveTail("");
           },
         });
 
@@ -308,7 +342,8 @@ export default function Chat({
             "Something went wrong reaching the interview brain. Try again in a moment.",
         });
         setLiveId(null);
-        setLiveText("");
+        setLiveCommitted("");
+        setLiveTail("");
       } finally {
         setLoading(false);
       }
@@ -320,7 +355,8 @@ export default function Chat({
       messages,
       settings.casualness,
       settings.voiceId,
-      liveText,
+      liveCommitted,
+      liveTail,
     ]
   );
 
@@ -400,7 +436,7 @@ export default function Chat({
           {liveId && (
             <div className="mb-3 flex w-full justify-start">
               <div className="rounded-2xl rounded-bl-sm bg-muted px-3 py-2 text-sm max-w-[85%] leading-relaxed">
-                {liveText || "…"}
+                {liveText.length ? liveText : "…"}
               </div>
             </div>
           )}
