@@ -4,6 +4,8 @@
 import { ttsCacheKey } from "@/lib/hash";
 import { DEFAULT_VOICE_ID, MAX_SAY_SECONDS } from "@/lib/tts-config";
 import { speak as webSpeak, cancelSpeech as webCancel } from "@/lib/speech";
+import { normalizeSay } from "@/lib/spokenizer";
+import { recordSayChars } from "@/lib/usage";
 
 /** Energy/progress sample emitted ~30fps while audio is playing. */
 export type Boundary = {
@@ -139,6 +141,8 @@ export class Speaker {
   public onStart: (() => void) | null = null;
   public onEnd: (() => void) | null = null;
   public onBoundary: ((b: Boundary) => void) | null = null;
+  /** Notify UI (toasts) for 429/402 etc. */
+  public onNotice: ((msg: string) => void) | null = null;
 
   /** Public controls ------------------------------------------------------- */
 
@@ -209,35 +213,56 @@ export class Speaker {
     this.playing = true;
     this.onStart?.();
 
-    const maxChars = item.noCap
-      ? Number.POSITIVE_INFINITY
-      : MAX_SAY_SECONDS * 200;
-    const safeSay = this.truncateAtSentenceBoundary(item.say, maxChars);
+    // SAFEGUARD #1: If say > budget, run spokenizer trim (no invite).
+    const charBudget = MAX_SAY_SECONDS * 200;
+    const safeSay =
+      item.noCap || item.say.length <= charBudget
+        ? item.say
+        : normalizeSay(item.say, { enforceCap: true, addInvite: false });
 
     try {
+      // Cache key uses the spoken content
       const key = await ttsCacheKey(item.voiceId || DEFAULT_VOICE_ID, safeSay);
 
+      // SAFEGUARD #2: Reuse cached audio if present
       let blob = await idbGet(key);
       if (!blob) blob = lsGet(key);
 
+      let fetched = false;
+      let status = 0;
+
       if (!blob) {
-        blob = await this.fetchTTS(safeSay, item.voiceId, item.noCap === true);
+        const res = await this.fetchTTS(
+          safeSay,
+          item.voiceId,
+          item.noCap === true
+        );
+        blob = res.blob;
+        status = res.status;
+        fetched = !!blob && status === 200;
         if (blob) {
-          // best-effort cache
           void idbSet(key, blob);
           void lsSet(key, blob);
         }
       }
 
       if (blob) {
+        if (fetched) recordSayChars(safeSay.length);
         await this.playBlob(blob, safeSay);
-      } else if (this.fallbackEnabled) {
-        await this.fallbackSpeak(safeSay);
+      } else {
+        // SAFEGUARD #4: Handle 429/402 explicitly
+        if (status === 429 || status === 402) {
+          this.onNotice?.("Voice server busy, using local voice");
+        } else if (status !== 0) {
+          this.onNotice?.("Voice service unavailable, using local voice");
+        } else {
+          this.onNotice?.("No network to voice service, using local voice");
+        }
+        if (this.fallbackEnabled) await this.fallbackSpeak(safeSay);
       }
     } catch {
-      if (this.fallbackEnabled) {
-        await this.fallbackSpeak(safeSay);
-      }
+      this.onNotice?.("Voice request failed, using local voice");
+      if (this.fallbackEnabled) await this.fallbackSpeak(safeSay);
     }
 
     this.playing = false;
@@ -249,28 +274,35 @@ export class Speaker {
     say: string,
     voiceId?: string,
     noCap?: boolean
-  ): Promise<Blob | null> {
+  ): Promise<{ blob: Blob | null; status: number }> {
     try {
       this.controller?.abort();
     } catch {}
     this.controller = new AbortController();
 
-    const res = await fetch("/api/tts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: this.controller.signal,
-      body: JSON.stringify({
-        say,
-        voiceId: voiceId || DEFAULT_VOICE_ID,
-        noCap: !!noCap,
-      }),
-    });
+    try {
+      const res = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: this.controller.signal,
+        body: JSON.stringify({
+          say,
+          voiceId: voiceId || DEFAULT_VOICE_ID,
+          noCap: !!noCap,
+        }),
+      });
 
-    if (!res.ok) return null;
-    const ct = res.headers.get("Content-Type") || "";
-    if (!ct.includes("audio")) return null;
+      const status = res.status;
+      const ct = res.headers.get("Content-Type") || "";
 
-    return await res.blob();
+      if (!res.ok || !ct.includes("audio")) {
+        return { blob: null, status };
+      }
+      const blob = await res.blob();
+      return { blob, status };
+    } catch {
+      return { blob: null, status: 0 };
+    }
   }
 
   private async playBlob(blob: Blob, sayForProgress: string): Promise<void> {
@@ -292,6 +324,7 @@ export class Speaker {
     } catch {
       // Autoplay blocked → fallback
       URL.revokeObjectURL(url);
+      this.onNotice?.("Autoplay blocked, using local voice");
       if (this.fallbackEnabled) {
         await this.fallbackSpeak(sayForProgress);
       }
@@ -416,25 +449,6 @@ export class Speaker {
         }
       );
     });
-  }
-
-  private truncateAtSentenceBoundary(text: string, maxChars: number): string {
-    if (!isFinite(maxChars)) return text;
-    const t = text.trim();
-    if (t.length <= maxChars) return t;
-
-    const cut = t.slice(0, maxChars);
-    const punct = Math.max(
-      cut.lastIndexOf("."),
-      cut.lastIndexOf("?"),
-      cut.lastIndexOf("!")
-    );
-    if (punct > 0) return cut.slice(0, punct + 1).trimEnd() + "…";
-
-    const sp = cut.lastIndexOf(" ");
-    if (sp > 0) return cut.slice(0, sp).trimEnd() + "…";
-
-    return cut.trimEnd() + "…";
   }
 }
 

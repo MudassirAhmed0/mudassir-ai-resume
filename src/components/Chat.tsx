@@ -12,6 +12,8 @@ import { useSTT } from "@/hooks/useSTT";
 import { useSettings } from "@/hooks/useSettings";
 import { cn } from "@/lib/utils"; // if you don't have cn, replace with className strings
 import SettingsDrawer from "@/components/SettingsDrawer";
+import { useToast } from "./ui/use-toast";
+import { getAvgChars, onUsageChange } from "@/lib/usage";
 
 type ChatMessage = {
   role: "user" | "assistant" | "system";
@@ -138,6 +140,8 @@ export default function Chat({
 
   // speaking state (driven by speaker)
   const [speaking, setSpeaking] = useState(false);
+  const { toast } = useToast();
+  const [avgChars10, setAvgChars10] = useState<number>(() => getAvgChars(10));
   useEffect(() => {
     speaker.onStart = () => setSpeaking(true);
     speaker.onEnd = () => setSpeaking(false);
@@ -146,6 +150,20 @@ export default function Chat({
       speaker.onEnd = null;
       speaker.onBoundary = null;
     };
+  }, []);
+
+  // hook speaker notices -> toast
+  useEffect(() => {
+    speaker.onNotice = (msg) => toast({ description: msg });
+    return () => {
+      speaker.onNotice = null;
+    };
+  }, [toast]);
+
+  // listen to usage changes
+  useEffect(() => {
+    const unsub = onUsageChange(() => setAvgChars10(getAvgChars(10)));
+    return unsub;
   }, []);
 
   // messages
@@ -375,6 +393,10 @@ export default function Chat({
             Send
           </Button>
         </div>
+      </div>
+      {/* Hidden usage counter for diagnostics */}
+      <div className="sr-only" data-avg-chars-10={avgChars10}>
+        avg chars / 10: {avgChars10}
       </div>
     </div>
   );
