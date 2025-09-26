@@ -149,8 +149,14 @@ export default function Chat({
   const { toast } = useToast();
   const [avgChars10, setAvgChars10] = useState<number>(() => getAvgChars(10));
   useEffect(() => {
-    speaker.onStart = () => setSpeaking(true);
-    speaker.onEnd = () => setSpeaking(false);
+    speaker.onStart = () => {
+      setSpeaking(true);
+      setIsSpeaking(true);
+    };
+    speaker.onEnd = () => {
+      setSpeaking(false);
+      setIsSpeaking(false);
+    };
     return () => {
       speaker.onStart = null;
       speaker.onEnd = null;
@@ -211,6 +217,31 @@ export default function Chat({
     },
     debounceMs: 1200,
   });
+
+  // stream tracking refs
+  const streamCancelRef = useRef<null | (() => void)>(null);
+  const isStreamingRef = useRef(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+
+  // Barge-in: if user starts STT while we're speaking or streaming -> kill TTS + SSE
+  useEffect(() => {
+    if (!stt.isRecording) return;
+    if (isSpeaking || isStreamingRef.current) {
+      try {
+        speaker.cancel?.();
+      } catch {}
+      try {
+        streamCancelRef.current?.();
+      } catch {}
+      streamCancelRef.current = null;
+      isStreamingRef.current = false;
+
+      // clear live bubble if you want an immediate clean slate
+      setLiveCommitted("");
+      setLiveTail("");
+      setLiveId(null);
+    }
+  }, [stt.isRecording, isSpeaking]);
 
   const addMessage = useCallback(
     (m: ChatMessage) => {
@@ -280,7 +311,11 @@ export default function Chat({
                   enforceCap: false,
                   addInvite: false,
                 });
-                speaker.speak({ say, noCap: true });
+                speaker.speak({
+                  say,
+                  voiceId: settings.voiceId, // <- pseudo-stream via /api/tts per chunk
+                  noCap: true,
+                }); // FIFO is handled inside speaker
               }
             }
 
@@ -288,6 +323,9 @@ export default function Chat({
             setLiveTail(rest);
           },
           onDone: async (raw) => {
+            isStreamingRef.current = false;
+            streamCancelRef.current = null;
+
             // Flush any remainder as the last segment
             const leftover = segRef.current.flush();
             if (leftover.length) {
@@ -298,7 +336,7 @@ export default function Chat({
                 enforceCap: false,
                 addInvite: false,
               });
-              speaker.speak({ say, noCap: true });
+              speaker.speak({ say, voiceId: settings.voiceId, noCap: true });
             }
 
             const finalShow = raw?.show ?? liveCommitted + liveTail;
@@ -322,6 +360,9 @@ export default function Chat({
             }
           },
           onError: (err) => {
+            isStreamingRef.current = false;
+            streamCancelRef.current = null;
+
             const aiMsg: ChatMessage = {
               role: "assistant",
               content: `⚠️ ${err}`,
@@ -334,7 +375,8 @@ export default function Chat({
         });
 
         // Store cancel function for cleanup if needed
-        // (could be used for component unmount cleanup)
+        isStreamingRef.current = true;
+        streamCancelRef.current = cancel;
       } catch {
         addMessage({
           role: "assistant",
@@ -366,6 +408,18 @@ export default function Chat({
     if (!stt.supported || loading) return;
     stt.toggle(input);
   }, [input, loading, speaking, stt]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      try {
+        streamCancelRef.current?.();
+      } catch {}
+      try {
+        speaker.cancel?.();
+      } catch {}
+    };
+  }, []);
 
   // UI bits
   const isSendingDisabled = loading;
