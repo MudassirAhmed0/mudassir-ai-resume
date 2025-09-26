@@ -197,6 +197,7 @@ export default function Chat({
   onMessage,
   resumeHref = "/resume.pdf",
 }: Props) {
+
   // Boot greet refs
   const hasBootGreeted = useRef(false);
   const isGreetingRef = useRef(false);
@@ -210,6 +211,29 @@ export default function Chat({
 
   // settings (voice/fallback/casualness)
   const { settings } = useSettings();
+
+  // --- STT first ---
+  const stt = useSTT({
+    onInterim: (text: string) => {
+      setInput(text);
+      // Handle barge-in during greeting
+      if (isGreetingRef.current && text.trim()) {
+        isGreetingRef.current = false;
+        try { speaker.cancel?.(); } catch {}
+      }
+    },
+    onFinalSubmit: async (finalText: string) => {
+      if (!finalText) return;
+      // Handle barge-in during greeting
+      if (isGreetingRef.current) {
+        isGreetingRef.current = false;
+        try { speaker.cancel?.(); } catch {}
+      }
+      dispatch({ type: "HEARD", text: finalText });
+      handleUserTurn(finalText);
+    },
+    debounceMs: 1200,
+  });
 
   // mirror fallback toggle into speaker
   useEffect(() => {
@@ -256,23 +280,21 @@ export default function Chat({
   const streamCancelRef = useRef<null | (() => void)>(null);
   const isStreamingRef = useRef(false);
 
-  /** Boot greet helper */
+  // --- Then bootGreet uses stt.start safely ---
   const bootGreet = useCallback(() => {
     if (hasBootGreeted.current) return;
     hasBootGreeted.current = true;
 
-    // UI first: Listening... feel snappy
     dispatch({ type: "LISTEN" });
-    stt.start("");
+    stt.start(""); // now stt is already defined
 
-    // Pre-speak a short friendly line
     isGreetingRef.current = true;
     speaker.speak({
       say: "Hey—ready when you are.",
       voiceId: settings.voiceId,
       noCap: true,
     });
-  }, [stt.start, settings.voiceId]);
+  }, [stt, settings.voiceId, dispatch]);
 
   /** Auto-enter Listening and greet on first mount */
   useEffect(() => {
@@ -314,28 +336,7 @@ export default function Chat({
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, loading, speaking, liveText]);
 
-  // STT
-  const stt = useSTT({
-    onInterim: (text: string) => {
-      setInput(text);
-      // Handle barge-in during greeting
-      if (isGreetingRef.current && text.trim()) {
-        isGreetingRef.current = false;
-        try { speaker.cancel?.(); } catch {}
-      }
-    },
-    onFinalSubmit: async (finalText: string) => {
-      if (!finalText) return;
-      // Handle barge-in during greeting
-      if (isGreetingRef.current) {
-        isGreetingRef.current = false;
-        try { speaker.cancel?.(); } catch {}
-      }
-      dispatch({ type: "HEARD", text: finalText });
-      handleUserTurn(finalText);
-    },
-    debounceMs: 1200,
-  });
+  // ...existing code...
 
   /** When we enter Listening, ensure STT is running */
   useEffect(() => {
