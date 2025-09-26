@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils"; // if you don't have cn, replace with classNam
 import SettingsDrawer from "@/components/SettingsDrawer";
 import { useToast } from "./ui/use-toast";
 import { getAvgChars, onUsageChange } from "@/lib/usage";
+import QAPanel from "@/components/dev/QAPanel";
 
 type ChatMessage = {
   role: "user" | "assistant" | "system";
@@ -209,7 +210,7 @@ export default function Chat({
   );
 
   const send = useCallback(
-    async (override?: string) => {
+    async (override?: string, meta?: Record<string, string>) => {
       if (loading) return;
       const content = (override ?? input).trim();
       if (!content) return;
@@ -224,16 +225,16 @@ export default function Chat({
       setLoading(true);
 
       try {
-        // add casualness hint as a system meta
-        const historyWithMeta = [
-          ...history,
-          {
-            role: "system",
-            content: `CASUALNESS_HINT=${settings.casualness}`, // Light|Normal|Spicy
-          } as ChatMessage,
+        // system hints
+        const metaMessages: ChatMessage[] = [
+          { role: "system", content: `CASUALNESS_HINT=${settings.casualness}` },
+          ...Object.entries(meta ?? {}).map(
+            ([k, v]) =>
+              ({ role: "system", content: `${k}=${v}` } as ChatMessage)
+          ),
         ];
 
-        const reply = await requestChatReply(historyWithMeta);
+        const reply = await requestChatReply([...history, ...metaMessages]);
 
         // Parse assistant JSON safely
         const parsed = safeParseAssistant(reply);
@@ -243,8 +244,12 @@ export default function Chat({
         if (!show)
           show = parsed.say.replace(/\s*\[pause-\d{2,4}\]\s*/gi, " ").trim();
 
-        // Speak exactly what's shown (spokenized), no cap, no invite
-        const say = normalizeSay(show, { enforceCap: false, addInvite: false });
+        // derive spoken track from what we show
+        const wantCapInvite = meta?.CAP_POLICY === "cap+invite";
+        const say = normalizeSay(show, {
+          enforceCap: wantCapInvite ? true : false,
+          addInvite: wantCapInvite ? true : false,
+        });
 
         // Render bubble
         const aiMsg: ChatMessage = { role: "assistant", content: show };
@@ -254,7 +259,7 @@ export default function Chat({
         await speaker.speak({
           say,
           voiceId: settings.voiceId,
-          noCap: true,
+          noCap: !wantCapInvite, // if we asked for cap+invite, let TTS cap too
         });
       } catch {
         addMessage({
@@ -294,6 +299,8 @@ export default function Chat({
 
   return (
     <div className="flex h-[100dvh] max-h-screen flex-col">
+      {/* Hidden QA panel (Cmd/Ctrl+Alt+Q) */}
+      <QAPanel onRun={(prompt, meta) => void send(prompt, meta)} />
       {/* Header */}
       <div className="flex items-center gap-2 border-b px-4 py-2">
         <div className="text-sm font-medium">Mudassir AI — Interview</div>
