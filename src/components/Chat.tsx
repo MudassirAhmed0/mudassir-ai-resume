@@ -14,6 +14,8 @@ import { normalizeSay } from "@/lib/spokenizer";
 import { speaker } from "@/lib/speaker";
 import { createSegmenter } from "@/lib/segmenter";
 import { useSTT } from "@/hooks/useSTT";
+import { openTTSStream } from "@/lib/ttsWsClient";
+import { ElevenPlayer } from "@/lib/ElevenPlayer";
 import { useSettings } from "@/hooks/useSettings";
 import { cn } from "@/lib/utils"; // if you don't have cn, replace with className strings
 import SettingsDrawer from "@/components/SettingsDrawer";
@@ -193,6 +195,11 @@ export default function Chat({
   // segmenter for real-time TTS
   const segRef = useRef(createSegmenter());
 
+  // TTS streaming refs
+  const ttsRef = useRef<ReturnType<typeof openTTSStream> | null>(null);
+  const playerRef = useRef<ElevenPlayer | null>(null);
+  const audioElRef = useRef<HTMLAudioElement | null>(null);
+
   // persist
   useEffect(() => {
     writeMessages(conversationId, messages);
@@ -218,6 +225,27 @@ export default function Chat({
     debounceMs: 1200,
   });
 
+  // TTS streaming function
+  function beginTrueStreaming(voiceId: string) {
+    // 1) open ws
+    ttsRef.current?.close();
+    ttsRef.current = openTTSStream({
+      voiceId,
+      modelId: "eleven_turbo_v2_5",
+      format: "mp3_44100_128",
+      onAudio: (b64) => playerRef.current?.pushBase64(b64),
+    });
+
+    // 2) start player
+    if (!audioElRef.current) {
+      const el = new Audio();
+      audioElRef.current = el;
+    }
+    playerRef.current?.stop();
+    playerRef.current = new ElevenPlayer(audioElRef.current!);
+    playerRef.current.start("audio/mpeg");
+  }
+
   // stream tracking refs
   const streamCancelRef = useRef<null | (() => void)>(null);
   const isStreamingRef = useRef(false);
@@ -232,6 +260,12 @@ export default function Chat({
       } catch {}
       try {
         streamCancelRef.current?.();
+      } catch {}
+      try {
+        ttsRef.current?.close();
+      } catch {}
+      try {
+        playerRef.current?.stop();
       } catch {}
       streamCancelRef.current = null;
       isStreamingRef.current = false;
@@ -262,6 +296,8 @@ export default function Chat({
 
       // barge-in: cancel any ongoing TTS
       speaker.cancel();
+      ttsRef.current?.close();
+      playerRef.current?.stop();
 
       const userMsg: ChatMessage = { role: "user", content };
       const history = [...messages, userMsg];
@@ -277,6 +313,9 @@ export default function Chat({
 
       // Reset segmenter for new message
       segRef.current = createSegmenter();
+
+      // Start TTS streaming
+      beginTrueStreaming(settings.voiceId);
 
       try {
         // system hints
@@ -305,17 +344,14 @@ export default function Chat({
               const appended = ready.join("");
               setLiveCommitted((prev) => prev + appended);
 
-              // 2) Enqueue TTS for each finalized segment
+              // 2) Send each finalized segment to TTS stream
               for (const seg of ready) {
                 const say = normalizeSay(seg, {
                   enforceCap: false,
                   addInvite: false,
                 });
-                speaker.speak({
-                  say,
-                  voiceId: settings.voiceId, // <- pseudo-stream via /api/tts per chunk
-                  noCap: true,
-                }); // FIFO is handled inside speaker
+                // Send to TTS stream with immediate trigger
+                ttsRef.current?.sendText(say, true);
               }
             }
 
@@ -331,13 +367,16 @@ export default function Chat({
             if (leftover.length) {
               const tailSeg = leftover.join("");
               setLiveCommitted((prev) => prev + tailSeg);
-              // Optionally send the final tail to TTS, too:
+              // Send the final tail to TTS stream
               const say = normalizeSay(tailSeg, {
                 enforceCap: false,
                 addInvite: false,
               });
-              speaker.speak({ say, voiceId: settings.voiceId, noCap: true });
+              ttsRef.current?.sendText(say, true);
             }
+
+            // Flush TTS stream to signal end-of-input
+            ttsRef.current?.flush();
 
             const finalShow = raw?.show ?? liveCommitted + liveTail;
             const aiMsg: ChatMessage = {
@@ -404,7 +443,11 @@ export default function Chat({
 
   const toggleMic = useCallback(() => {
     // barge-in if speaking
-    if (speaking) speaker.cancel();
+    if (speaking) {
+      speaker.cancel();
+      ttsRef.current?.close();
+      playerRef.current?.stop();
+    }
     if (!stt.supported || loading) return;
     stt.toggle(input);
   }, [input, loading, speaking, stt]);
@@ -417,6 +460,12 @@ export default function Chat({
       } catch {}
       try {
         speaker.cancel?.();
+      } catch {}
+      try {
+        ttsRef.current?.close();
+      } catch {}
+      try {
+        playerRef.current?.stop();
       } catch {}
     };
   }, []);
