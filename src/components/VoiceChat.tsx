@@ -40,6 +40,8 @@ type Props = {
   defaultShowComposer?: boolean;
   /** Optional: onSend handler if you enable the tiny composer */
   onSendText?: (text: string) => void;
+  /** Live streaming text to show while generating */
+  liveText?: string;
 };
 
 export default function VoiceChat({
@@ -48,6 +50,7 @@ export default function VoiceChat({
   avatarUrl = "/mudassir.jpeg",
   defaultShowComposer = false,
   onSendText,
+  liveText = "",
 }: Props) {
   const { start: startSTT, stop: stopSTT, isRecording, setOnFinal } = useSTT();
 
@@ -126,7 +129,7 @@ export default function VoiceChat({
         ref={listRef}
         className="w-full max-w-xl h-44 overflow-y-auto rounded-2xl border border-zinc-200/70 bg-white/60 backdrop-blur p-3 shadow-sm"
       >
-        <Transcript messages={messages} />
+        <Transcript messages={messages} liveText={liveText} />
       </div>
 
       {/* ===== Controls: Mic only + more (⋯) to reveal text input ===== */}
@@ -193,8 +196,14 @@ export default function VoiceChat({
 
 // ===================== Subcomponents ==========================================
 
-function Transcript({ messages }: { messages?: ChatMessage[] }) {
-  if (!messages?.length) {
+function Transcript({
+  messages,
+  liveText,
+}: {
+  messages?: ChatMessage[];
+  liveText?: string;
+}) {
+  if (!messages?.length && !liveText) {
     return (
       <div className="text-xs text-zinc-500">Transcript will appear here…</div>
     );
@@ -202,7 +211,7 @@ function Transcript({ messages }: { messages?: ChatMessage[] }) {
   return (
     <div className="space-y-2 text-[13px] leading-snug">
       {messages
-        .filter((m) => m.role !== "system")
+        ?.filter((m) => m.role !== "system")
         .map((m, i) => (
           <div key={m.id ?? i} className="flex gap-2">
             <span className="shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-zinc-300 text-zinc-700 bg-white/80">
@@ -211,6 +220,16 @@ function Transcript({ messages }: { messages?: ChatMessage[] }) {
             <p className="text-zinc-800/90">{m.content}</p>
           </div>
         ))}
+
+      {/* Live streaming text */}
+      {liveText && (
+        <div className="flex gap-2">
+          <span className="shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-zinc-300 text-zinc-700 bg-white/80">
+            Avatar
+          </span>
+          <p className="text-zinc-800/90 italic">{liveText || "…"}</p>
+        </div>
+      )}
     </div>
   );
 }

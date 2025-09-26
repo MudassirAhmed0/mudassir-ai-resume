@@ -6,6 +6,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { requestChatReply } from "@/lib/chatApi";
+import {
+  streamChat,
+  type ChatMessage as StreamChatMessage,
+} from "@/lib/streamChat";
 import { normalizeSay } from "@/lib/spokenizer";
 import { speaker } from "@/lib/speaker";
 import { useSTT } from "@/hooks/useSTT";
@@ -174,6 +178,10 @@ export default function Chat({
   const [input, setInput] = useState<string>(() => readDraft(conversationId));
   const [loading, setLoading] = useState(false);
 
+  // streaming state
+  const [liveId, setLiveId] = useState<string | null>(null);
+  const [liveText, setLiveText] = useState("");
+
   // persist
   useEffect(() => {
     writeMessages(conversationId, messages);
@@ -186,7 +194,7 @@ export default function Chat({
   const endRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, loading, speaking]);
+  }, [messages, loading, speaking, liveText]);
 
   // STT
   const stt = useSTT({
@@ -224,6 +232,11 @@ export default function Chat({
       setInput("");
       setLoading(true);
 
+      // Add a live bubble placeholder
+      const id = crypto.randomUUID();
+      setLiveId(id);
+      setLiveText("");
+
       try {
         // system hints
         const metaMessages: ChatMessage[] = [
@@ -234,39 +247,68 @@ export default function Chat({
           ),
         ];
 
-        const reply = await requestChatReply([...history, ...metaMessages]);
+        // Convert to stream format
+        const streamMessages: StreamChatMessage[] = [
+          ...history,
+          ...metaMessages,
+        ];
 
-        // Parse assistant JSON safely
-        const parsed = safeParseAssistant(reply);
+        const { cancel } = streamChat({
+          messages: streamMessages,
+          temperature: 0.7,
+          onToken: (token) => {
+            setLiveText((prev) => prev + token);
+          },
+          onDone: async (raw) => {
+            // Replace live bubble with final assistant message
+            let show = raw.show || liveText;
+            let say = raw.say || show;
 
-        // Source of truth: what we show
-        let show = parsed.show.replace(/\s*\[pause-\d{2,4}\]\s*/gi, " ").trim();
-        if (!show)
-          show = parsed.say.replace(/\s*\[pause-\d{2,4}\]\s*/gi, " ").trim();
+            // Clean up pause tags
+            show = show.replace(/\s*\[pause-\d{2,4}\]\s*/gi, " ").trim();
+            say = say.replace(/\s*\[pause-\d{2,4}\]\s*/gi, " ").trim();
 
-        // derive spoken track from what we show
-        const wantCapInvite = meta?.CAP_POLICY === "cap+invite";
-        const say = normalizeSay(show, {
-          enforceCap: wantCapInvite ? true : false,
-          addInvite: wantCapInvite ? true : false,
+            // derive spoken track from what we show
+            const wantCapInvite = meta?.CAP_POLICY === "cap+invite";
+            const normalizedSay = normalizeSay(show, {
+              enforceCap: wantCapInvite ? true : false,
+              addInvite: wantCapInvite ? true : false,
+            });
+
+            // Render bubble
+            const aiMsg: ChatMessage = { role: "assistant", content: show };
+            addMessage(aiMsg);
+            setLiveId(null);
+            setLiveText("");
+
+            // TTS
+            await speaker.speak({
+              say: normalizedSay,
+              voiceId: settings.voiceId,
+              noCap: !wantCapInvite, // if we asked for cap+invite, let TTS cap too
+            });
+          },
+          onError: (err) => {
+            const aiMsg: ChatMessage = {
+              role: "assistant",
+              content: `⚠️ ${err}`,
+            };
+            addMessage(aiMsg);
+            setLiveId(null);
+            setLiveText("");
+          },
         });
 
-        // Render bubble
-        const aiMsg: ChatMessage = { role: "assistant", content: show };
-        addMessage(aiMsg);
-
-        // TTS
-        await speaker.speak({
-          say,
-          voiceId: settings.voiceId,
-          noCap: !wantCapInvite, // if we asked for cap+invite, let TTS cap too
-        });
+        // Store cancel function for cleanup if needed
+        // (could be used for component unmount cleanup)
       } catch {
         addMessage({
           role: "assistant",
           content:
             "Something went wrong reaching the interview brain. Try again in a moment.",
         });
+        setLiveId(null);
+        setLiveText("");
       } finally {
         setLoading(false);
       }
@@ -278,6 +320,7 @@ export default function Chat({
       messages,
       settings.casualness,
       settings.voiceId,
+      liveText,
     ]
   );
 
@@ -353,8 +396,17 @@ export default function Chat({
             );
           })}
 
+          {/* Live streaming bubble */}
+          {liveId && (
+            <div className="mb-3 flex w-full justify-start">
+              <div className="rounded-2xl rounded-bl-sm bg-muted px-3 py-2 text-sm max-w-[85%] leading-relaxed">
+                {liveText || "…"}
+              </div>
+            </div>
+          )}
+
           {/* Typing indicator */}
-          {loading && (
+          {loading && !liveId && (
             <div className="mb-3 flex w-full justify-start">
               <div className="rounded-2xl rounded-bl-sm bg-muted px-3 py-2">
                 <div className="flex items-center gap-1">

@@ -3,6 +3,10 @@
 import { useState, useCallback } from "react";
 import VoiceChat from "@/components/VoiceChat";
 import { requestChatReply } from "@/lib/chatApi";
+import {
+  streamChat,
+  type ChatMessage as StreamChatMessage,
+} from "@/lib/streamChat";
 import { normalizeSay } from "@/lib/spokenizer";
 import { speaker } from "@/lib/speaker";
 import { useSettings } from "@/hooks/useSettings";
@@ -18,6 +22,9 @@ export default function VoiceChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isThinking, setIsThinking] = useState(false);
 
+  // streaming state
+  const [liveText, setLiveText] = useState("");
+
   const handleSendText = useCallback(
     async (text: string) => {
       if (!text.trim()) return;
@@ -26,35 +33,65 @@ export default function VoiceChatPage() {
       const userMsg: ChatMessage = { role: "user", content: text };
       setMessages((prev) => [...prev, userMsg]);
       setIsThinking(true);
+      setLiveText("");
 
       try {
-        // Get AI response
+        // Get AI response using streaming
         const history = [...messages, userMsg];
         const metaMessages: ChatMessage[] = [
           { role: "system", content: `CASUALNESS_HINT=${settings.casualness}` },
         ];
 
-        const reply = await requestChatReply([...history, ...metaMessages]);
+        // Convert to stream format
+        const streamMessages: StreamChatMessage[] = [
+          ...history,
+          ...metaMessages,
+        ];
 
-        // Parse assistant response
-        const parsed = parseAssistantResponse(reply);
-        const show = parsed.show || parsed.say;
+        const { cancel } = streamChat({
+          messages: streamMessages,
+          temperature: 0.7,
+          onToken: (token) => {
+            setLiveText((prev) => prev + token);
+          },
+          onDone: async (raw) => {
+            // Replace live text with final assistant message
+            let show = raw.show || liveText;
+            let say = raw.say || show;
 
-        // Add assistant message
-        const aiMsg: ChatMessage = { role: "assistant", content: show };
-        setMessages((prev) => [...prev, aiMsg]);
+            // Clean up pause tags
+            show = show.replace(/\s*\[pause-\d{2,4}\]\s*/gi, " ").trim();
+            say = say.replace(/\s*\[pause-\d{2,4}\]\s*/gi, " ").trim();
 
-        // Speak the response
-        const say = normalizeSay(show, {
-          enforceCap: false,
-          addInvite: false,
+            // Add assistant message
+            const aiMsg: ChatMessage = { role: "assistant", content: show };
+            setMessages((prev) => [...prev, aiMsg]);
+            setLiveText("");
+
+            // Speak the response
+            const normalizedSay = normalizeSay(show, {
+              enforceCap: false,
+              addInvite: false,
+            });
+
+            await speaker.speak({
+              say: normalizedSay,
+              voiceId: settings.voiceId,
+              noCap: true,
+            });
+          },
+          onError: (err) => {
+            console.error("Streaming error:", err);
+            const errorMsg: ChatMessage = {
+              role: "assistant",
+              content: `⚠️ ${err}`,
+            };
+            setMessages((prev) => [...prev, errorMsg]);
+            setLiveText("");
+          },
         });
 
-        await speaker.speak({
-          say,
-          voiceId: settings.voiceId,
-          noCap: true,
-        });
+        // Store cancel function for cleanup if needed
       } catch (error) {
         console.error("Error getting response:", error);
         const errorMsg: ChatMessage = {
@@ -62,11 +99,12 @@ export default function VoiceChatPage() {
           content: "Sorry, I encountered an error. Please try again.",
         };
         setMessages((prev) => [...prev, errorMsg]);
+        setLiveText("");
       } finally {
         setIsThinking(false);
       }
     },
-    [messages, settings.casualness, settings.voiceId]
+    [messages, settings.casualness, settings.voiceId, liveText]
   );
 
   return (
@@ -77,6 +115,7 @@ export default function VoiceChatPage() {
         avatarUrl="/mudassir.jpeg"
         defaultShowComposer={true}
         onSendText={handleSendText}
+        liveText={liveText}
       />
     </div>
   );
