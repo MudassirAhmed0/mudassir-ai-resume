@@ -1,7 +1,14 @@
 // src/components/Chat.tsx
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useReducer,
+} from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -22,6 +29,58 @@ import SettingsDrawer from "@/components/SettingsDrawer";
 import { useToast } from "./ui/use-toast";
 import { getAvgChars, onUsageChange } from "@/lib/usage";
 import QAPanel from "@/components/dev/QAPanel";
+
+// State machine types
+type LoopState = "idle" | "listening" | "thinking" | "speaking";
+
+type FSM = {
+  state: LoopState;
+  pending: number; // how many utterances are queued/playing
+  streamDone: boolean; // chat SSE finished?
+};
+
+type Act =
+  | { type: "LISTEN" }
+  | { type: "HEARD"; text: string }
+  | { type: "THINK" }
+  | { type: "SPEAK_SEG"; count: number }
+  | { type: "UTTER_END" }
+  | { type: "STREAM_DONE" }
+  | { type: "CANCEL" };
+
+function reducer(s: FSM, a: Act): FSM {
+  switch (a.type) {
+    case "LISTEN":
+      return { state: "listening", pending: 0, streamDone: false };
+    case "HEARD":
+      return { state: "thinking", pending: 0, streamDone: false };
+    case "THINK":
+      return { ...s, state: "thinking" };
+    case "SPEAK_SEG":
+      return { ...s, state: "speaking", pending: s.pending + a.count };
+    case "UTTER_END": {
+      const pending = Math.max(0, s.pending - 1);
+      const backToListening = s.streamDone && pending === 0;
+      return {
+        state: backToListening ? "listening" : s.state,
+        pending,
+        streamDone: s.streamDone,
+      };
+    }
+    case "STREAM_DONE": {
+      const backToListening = s.pending === 0;
+      return {
+        state: backToListening ? "listening" : s.state,
+        pending: s.pending,
+        streamDone: true,
+      };
+    }
+    case "CANCEL":
+      return { state: "listening", pending: 0, streamDone: false };
+    default:
+      return s;
+  }
+}
 
 type ChatMessage = {
   role: "user" | "assistant" | "system";
@@ -138,6 +197,13 @@ export default function Chat({
   onMessage,
   resumeHref = "/resume.pdf",
 }: Props) {
+  // State machine
+  const [{ state, pending, streamDone }, dispatch] = useReducer(reducer, {
+    state: "idle",
+    pending: 0,
+    streamDone: false,
+  });
+
   // settings (voice/fallback/casualness)
   const { settings } = useSettings();
 
@@ -158,6 +224,7 @@ export default function Chat({
     speaker.onEnd = () => {
       setSpeaking(false);
       setIsSpeaking(false);
+      dispatch({ type: "UTTER_END" });
     };
     return () => {
       speaker.onStart = null;
@@ -180,6 +247,16 @@ export default function Chat({
     return unsub;
   }, []);
 
+  // State machine effects
+  const segRef = useRef(createSegmenter());
+  const streamCancelRef = useRef<null | (() => void)>(null);
+  const isStreamingRef = useRef(false);
+
+  /** Auto-enter Listening on first mount (or after your Start button) */
+  useEffect(() => {
+    if (state === "idle") dispatch({ type: "LISTEN" });
+  }, [state]);
+
   // messages
   const [messages, setMessages] = useState<ChatMessage[]>(() =>
     readMessages(conversationId)
@@ -192,8 +269,7 @@ export default function Chat({
   const [liveCommitted, setLiveCommitted] = useState("");
   const [liveTail, setLiveTail] = useState("");
 
-  // segmenter for real-time TTS
-  const segRef = useRef(createSegmenter());
+  // segmenter for real-time TTS (moved to state machine effects)
 
   // TTS streaming refs
   const ttsRef = useRef<ReturnType<typeof openTTSStream> | null>(null);
@@ -220,10 +296,37 @@ export default function Chat({
     onInterim: setInput,
     onFinalSubmit: async (finalText: string) => {
       if (!finalText) return;
-      await send(finalText);
+      dispatch({ type: "HEARD", text: finalText });
+      handleUserTurn(finalText);
     },
     debounceMs: 1200,
   });
+
+  /** When we enter Listening, ensure STT is running */
+  useEffect(() => {
+    if (state === "listening" && !stt.isRecording) stt.start("");
+  }, [state, stt.isRecording, stt.start]);
+
+  /** When we leave Listening (Thinking/Speaking), pause STT to avoid echo */
+  useEffect(() => {
+    if ((state === "thinking" || state === "speaking") && stt.isRecording)
+      stt.stop();
+  }, [state, stt.isRecording, stt.stop]);
+
+  /** Barge-in: if user starts mic while we are Thinking/Speaking -> cancel stream+TTS and go listen */
+  useEffect(() => {
+    if (stt.isRecording && (state === "thinking" || state === "speaking")) {
+      try {
+        speaker.cancel?.();
+      } catch {}
+      try {
+        streamCancelRef.current?.();
+      } catch {}
+      isStreamingRef.current = false;
+      streamCancelRef.current = null;
+      dispatch({ type: "CANCEL" });
+    }
+  }, [stt.isRecording, state]);
 
   // TTS streaming function
   function beginTrueStreaming(voiceId: string) {
@@ -246,9 +349,6 @@ export default function Chat({
     playerRef.current.start("audio/mpeg");
   }
 
-  // stream tracking refs
-  const streamCancelRef = useRef<null | (() => void)>(null);
-  const isStreamingRef = useRef(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
 
   // Barge-in: if user starts STT while we're speaking or streaming -> kill TTS + SSE
@@ -286,6 +386,92 @@ export default function Chat({
       });
     },
     [onMessage]
+  );
+
+  // ---- send one user turn, stream assistant, speak segments ----
+  const handleUserTurn = useCallback(
+    (userText: string) => {
+      // add user to transcript UI if you have it
+      const userMsg: ChatMessage = { role: "user", content: userText };
+      addMessage(userMsg);
+
+      // reset segmenter and live bubble
+      segRef.current = createSegmenter();
+
+      // start streaming
+      const { cancel } = streamChat({
+        messages: [...messages, userMsg],
+        onToken: (t) => {
+          const { ready, rest } = segRef.current.push(t);
+
+          // live bubble update:
+          setLiveCommitted((prev) => prev + ready.join(""));
+          setLiveTail(rest);
+
+          if (ready.length) {
+            // enqueue TTS for each finalized segment
+            for (const seg of ready) {
+              const say = normalizeSay(seg, {
+                enforceCap: false,
+                addInvite: false,
+              });
+              speaker.speak({ say, voiceId: settings.voiceId, noCap: true });
+            }
+            dispatch({ type: "SPEAK_SEG", count: ready.length });
+          }
+        },
+        onDone: (raw) => {
+          // flush remainder (optional to speak)
+          const leftover = segRef.current.flush();
+          if (leftover.length) {
+            const say = normalizeSay(leftover.join(""), {
+              enforceCap: false,
+              addInvite: false,
+            });
+            if (say.trim()) {
+              speaker.speak({ say, voiceId: settings.voiceId, noCap: true });
+              dispatch({ type: "SPEAK_SEG", count: 1 });
+            }
+          }
+
+          // finalize transcript UI
+          const finalShow = raw?.show ?? liveCommitted + liveTail;
+          const aiMsg: ChatMessage = {
+            role: "assistant",
+            content: finalShow,
+          };
+          addMessage(aiMsg);
+          setLiveCommitted("");
+          setLiveTail("");
+
+          isStreamingRef.current = false;
+          streamCancelRef.current = null;
+          dispatch({ type: "STREAM_DONE" });
+
+          // you may also prefer Eleven's canonical say:
+          if (raw?.say) {
+            // Optional: if you rely strictly on raw.say, remove the leftover speak above.
+          }
+        },
+        onError: () => {
+          isStreamingRef.current = false;
+          streamCancelRef.current = null;
+          dispatch({ type: "STREAM_DONE" }); // treat as ended so we return to Listening
+          const aiMsg: ChatMessage = {
+            role: "assistant",
+            content: "⚠️ Stream error",
+          };
+          addMessage(aiMsg);
+          setLiveCommitted("");
+          setLiveTail("");
+        },
+      });
+
+      isStreamingRef.current = true;
+      streamCancelRef.current = cancel;
+      dispatch({ type: "THINK" });
+    },
+    [settings.voiceId, messages, addMessage, liveCommitted, liveTail]
   );
 
   const send = useCallback(
@@ -570,9 +756,27 @@ export default function Chat({
             variant={stt.isRecording ? "destructive" : "secondary"}
             onClick={toggleMic}
             className={cn(stt.isRecording && "animate-pulse")}
-            title={stt.isRecording ? "Stop mic" : "Start mic"}
+            title={
+              state === "listening"
+                ? "Listening..."
+                : state === "thinking"
+                ? "Thinking..."
+                : state === "speaking"
+                ? "Speaking..."
+                : stt.isRecording
+                ? "Stop mic"
+                : "Start mic"
+            }
           >
-            {stt.isRecording ? "Stop" : "Mic"}
+            {state === "listening"
+              ? "Listening"
+              : state === "thinking"
+              ? "Thinking"
+              : state === "speaking"
+              ? "Speaking"
+              : stt.isRecording
+              ? "Stop"
+              : "Mic"}
           </Button>
 
           <Input
