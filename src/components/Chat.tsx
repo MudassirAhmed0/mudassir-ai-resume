@@ -197,6 +197,10 @@ export default function Chat({
   onMessage,
   resumeHref = "/resume.pdf",
 }: Props) {
+  // Boot greet refs
+  const hasBootGreeted = useRef(false);
+  const isGreetingRef = useRef(false);
+
   // State machine
   const [{ state, pending, streamDone }, dispatch] = useReducer(reducer, {
     state: "idle",
@@ -252,10 +256,29 @@ export default function Chat({
   const streamCancelRef = useRef<null | (() => void)>(null);
   const isStreamingRef = useRef(false);
 
-  /** Auto-enter Listening on first mount (or after your Start button) */
+  /** Boot greet helper */
+  const bootGreet = useCallback(() => {
+    if (hasBootGreeted.current) return;
+    hasBootGreeted.current = true;
+
+    // UI first: Listening... feel snappy
+    dispatch({ type: "LISTEN" });
+    stt.start("");
+
+    // Pre-speak a short friendly line
+    isGreetingRef.current = true;
+    speaker.speak({
+      say: "Hey—ready when you are.",
+      voiceId: settings.voiceId,
+      noCap: true,
+    });
+  }, [stt.start, settings.voiceId]);
+
+  /** Auto-enter Listening and greet on first mount */
   useEffect(() => {
     if (state === "idle") dispatch({ type: "LISTEN" });
-  }, [state]);
+    if (state === "listening") bootGreet();
+  }, [state, bootGreet]);
 
   // messages
   const [messages, setMessages] = useState<ChatMessage[]>(() =>
@@ -293,9 +316,21 @@ export default function Chat({
 
   // STT
   const stt = useSTT({
-    onInterim: setInput,
+    onInterim: (text: string) => {
+      setInput(text);
+      // Handle barge-in during greeting
+      if (isGreetingRef.current && text.trim()) {
+        isGreetingRef.current = false;
+        try { speaker.cancel?.(); } catch {}
+      }
+    },
     onFinalSubmit: async (finalText: string) => {
       if (!finalText) return;
+      // Handle barge-in during greeting
+      if (isGreetingRef.current) {
+        isGreetingRef.current = false;
+        try { speaker.cancel?.(); } catch {}
+      }
       dispatch({ type: "HEARD", text: finalText });
       handleUserTurn(finalText);
     },
@@ -327,6 +362,14 @@ export default function Chat({
       dispatch({ type: "CANCEL" });
     }
   }, [stt.isRecording, state]);
+
+  /** Barge-in: cancel greet if user speaks mid-greet */
+  useEffect(() => {
+    // Stop marking greeting once its utterance ends
+    speaker.onEnd = () => { isGreetingRef.current = false; };
+
+    return () => { speaker.onEnd = null; };
+  }, []);
 
   // TTS streaming function
   function beginTrueStreaming(voiceId: string) {
