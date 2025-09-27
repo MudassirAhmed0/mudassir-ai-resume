@@ -20,7 +20,7 @@ export function useSTT() {
 
   const [isRecording, setIsRecording] = useState(false);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
-  const onFinalRef = useRef<(text: string) => void>();
+  const onFinalRef = useRef<(text: string) => void | null>(null);
 
   const start = useCallback(
     (initialText: string = "") => {

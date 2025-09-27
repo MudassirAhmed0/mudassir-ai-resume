@@ -39,7 +39,18 @@ export class ElevenPlayer {
     if (!this.sourceBuffer || !this.queue.length || this.sourceBuffer.updating)
       return;
     const chunk = this.queue.shift()!;
-    this.sourceBuffer.appendBuffer(chunk);
+    // Convert chunk to ArrayBuffer for appendBuffer
+    let buffer: ArrayBuffer;
+    if (chunk.buffer instanceof ArrayBuffer) {
+      // If chunk is a Uint8Array backed by ArrayBuffer, slice to get only the relevant bytes
+      buffer = chunk.byteOffset === 0 && chunk.byteLength === chunk.buffer.byteLength
+        ? chunk.buffer
+        : chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength);
+    } else {
+      // Fallback: create a new ArrayBuffer from chunk
+      buffer = new Uint8Array(chunk).buffer;
+    }
+    this.sourceBuffer.appendBuffer(buffer);
   }
 
   stop() {
