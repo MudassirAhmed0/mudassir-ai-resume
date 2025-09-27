@@ -12,7 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { requestChatReply } from "@/lib/chatApi";
+// import { requestChatReply } from "@/lib/chatApi";
 import {
   streamChat,
   type ChatMessage as StreamChatMessage,
@@ -197,7 +197,6 @@ export default function Chat({
   onMessage,
   resumeHref = "/resume.pdf",
 }: Props) {
-
   // Boot greet refs
   const hasBootGreeted = useRef(false);
   const isGreetingRef = useRef(false);
@@ -219,7 +218,9 @@ export default function Chat({
       // Handle barge-in during greeting
       if (isGreetingRef.current && text.trim()) {
         isGreetingRef.current = false;
-        try { speaker.cancel?.(); } catch {}
+        try {
+          speaker.cancel?.();
+        } catch {}
       }
     },
     onFinalSubmit: async (finalText: string) => {
@@ -227,7 +228,9 @@ export default function Chat({
       // Handle barge-in during greeting
       if (isGreetingRef.current) {
         isGreetingRef.current = false;
-        try { speaker.cancel?.(); } catch {}
+        try {
+          speaker.cancel?.();
+        } catch {}
       }
       dispatch({ type: "HEARD", text: finalText });
       handleUserTurn(finalText);
@@ -270,12 +273,14 @@ export default function Chat({
       // 2) transiently force fallback if ElevenLabs is busy / rate-limited
       if (/(busy|unavailable|rate|429|server|timeout)/i.test(msg)) {
         const prev = settings.fallback;
-        speaker.setFallbackEnabled(true);      // switch new chunks to WebSpeech
+        speaker.setFallbackEnabled(true); // switch new chunks to WebSpeech
         // auto-restore user setting after a short window
         window.setTimeout(() => speaker.setFallbackEnabled(prev), 15000);
       }
     };
-    return () => { speaker.onNotice = null; };
+    return () => {
+      speaker.onNotice = null;
+    };
   }, [toast, settings.fallback]);
 
   // listen to usage changes
@@ -376,9 +381,13 @@ export default function Chat({
   /** Barge-in: cancel greet if user speaks mid-greet */
   useEffect(() => {
     // Stop marking greeting once its utterance ends
-    speaker.onEnd = () => { isGreetingRef.current = false; };
+    speaker.onEnd = () => {
+      isGreetingRef.current = false;
+    };
 
-    return () => { speaker.onEnd = null; };
+    return () => {
+      speaker.onEnd = null;
+    };
   }, []);
 
   // TTS streaming function
@@ -516,8 +525,12 @@ export default function Chat({
           dispatch({ type: "STREAM_DONE" });
           // finalize with whatever we have so far
           const finalSoFar = (liveCommitted + liveTail).trim() || "…";
-          addMessage({ role: "assistant", content: finalSoFar }, { markHiccup: true });
-          setLiveCommitted(""); setLiveTail("");
+          addMessage(
+            { role: "assistant", content: finalSoFar },
+            { markHiccup: true }
+          );
+          setLiveCommitted("");
+          setLiveTail("");
         },
       });
 
@@ -642,9 +655,13 @@ export default function Chat({
             isStreamingRef.current = false;
             streamCancelRef.current = null;
             const finalSoFar = (liveCommitted + liveTail).trim() || `⚠️ ${err}`;
-            addMessage({ role: "assistant", content: finalSoFar }, { markHiccup: true });
+            addMessage(
+              { role: "assistant", content: finalSoFar },
+              { markHiccup: true }
+            );
             setLiveId(null);
-            setLiveCommitted(""); setLiveTail("");
+            setLiveCommitted("");
+            setLiveTail("");
           },
         });
 
