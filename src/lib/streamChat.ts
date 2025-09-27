@@ -43,6 +43,7 @@ export function streamChat(opts: StreamOpts) {
       const decoder = new TextDecoder();
       let buffer = "";
       let sawDone = false;
+      let suppressed = false;
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -61,7 +62,16 @@ export function streamChat(opts: StreamOpts) {
           if (!event) continue;
           try {
             const data = JSON.parse(dataStr || "{}");
-            if (event === "token" && typeof data.text === "string") onToken(data.text);
+            if (event === "token" && typeof data.text === "string") {
+              if (!suppressed) {
+                const w = data.text;
+                if (/[{][\s\n]*"say"\s*:|[{][\s\n]*"show"\s*:|```json/i.test(w)) {
+                  suppressed = true;
+                } else {
+                  onToken(w);
+                }
+              }
+            }
             if (event === "done") { onDone(data.raw ?? {}); sawDone = true; }
           } catch {
             // ignore bad frames

@@ -106,6 +106,7 @@ export async function POST(req: NextRequest) {
       let fullText = "";
 
       try {
+        let suppressTail = false;
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
@@ -140,7 +141,21 @@ export async function POST(req: NextRequest) {
               const token = delta?.content;
               if (token) {
                 fullText += token;
-                send("token", { text: token });
+                // Detect start of the tail JSON or a fenced json block
+                if (!suppressTail) {
+                  const recent = fullText.slice(-200);
+                  if (
+                    /{\s*"say"\s*:/.test(recent) ||
+                    /{\s*"show"\s*:/.test(recent) ||
+                    /```json/i.test(recent)
+                  ) {
+                    suppressTail = true;
+                  }
+                }
+                // Only stream human-readable tokens
+                if (!suppressTail) {
+                  send("token", { text: token });
+                }
               }
             } catch {
               // ignore malformed frame

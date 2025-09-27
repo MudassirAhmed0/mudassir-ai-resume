@@ -20,6 +20,8 @@ Rules
 - "say": spoken-friendly version of the full answer with [pause-300] between points (no markdown/emojis).
 - "show": same content, readable on-screen (may use light markdown, no pause tags).
 - Do not explain the format; stream the content first, then end with the single JSON.
+
+IMPORTANT: Do not output any JSON until the very end. Stream only normal sentences first.
 `;
 
 // Helper to stringify KNOWLEDGE for a second system message
