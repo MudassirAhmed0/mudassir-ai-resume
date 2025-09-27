@@ -7,7 +7,7 @@ export type StreamOpts = {
   messages: ChatMessage[];
   temperature?: number;
   onToken: (t: string) => void; // append to live bubble
-  onDone: (raw: { say?: string; show?: string; [k: string]: any }) => void; // replace bubble
+  onDone: (raw: { say?: string; show?: string; [k: string]: unknown }) => void; // replace bubble
   onError?: (err: string) => void;
   signal?: AbortSignal;
 };
@@ -83,8 +83,10 @@ export function streamChat(opts: StreamOpts) {
         onError?.("disconnected");
         return;
       }
-    } catch (e: any) {
-      if (e?.name !== "AbortError") onError?.(e?.message || "stream aborted");
+    } catch (e: unknown) {
+      if (typeof e === "object" && e !== null && "name" in e && (e as { name?: string }).name !== "AbortError") {
+        onError?.((e as { message?: string }).message || "stream aborted");
+      }
     }
   })();
   return { cancel: abort };

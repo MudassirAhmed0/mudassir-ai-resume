@@ -57,8 +57,8 @@ export default function VoiceChat({
   // Track TTS speaking state via speaker events
   const [isSpeaking, setIsSpeaking] = useState(false);
   useEffect(() => {
-    const offStart = (speaker as any)?.onStart?.(() => setIsSpeaking(true));
-    const offEnd = (speaker as any)?.onEnd?.(() => setIsSpeaking(false));
+  const offStart = (speaker as unknown as { onStart?: (cb: () => void) => (() => void) })?.onStart?.(() => setIsSpeaking(true));
+  const offEnd = (speaker as unknown as { onEnd?: (cb: () => void) => (() => void) })?.onEnd?.(() => setIsSpeaking(false));
     return () => {
       try {
         offStart?.();

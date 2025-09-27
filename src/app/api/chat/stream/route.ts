@@ -166,9 +166,13 @@ export async function POST(req: NextRequest) {
         const raw = finalizeRaw(fullText);
         send("done", { raw });
         controller.close();
-      } catch (e: any) {
-        send("done", { raw: { error: e?.message || "stream error" } });
-        controller.close();
+        } catch (e: unknown) {
+          let errorMsg = "stream error";
+          if (typeof e === "object" && e !== null && "message" in e) {
+            errorMsg = (e as { message?: string }).message || errorMsg;
+          }
+          send("done", { raw: { error: errorMsg } });
+          controller.close();
       }
     },
   });

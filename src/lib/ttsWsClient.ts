@@ -13,7 +13,7 @@ export function openTTSStream(opts: {
   onError?: (err: string) => void;
 }): TTSStream {
   const { voiceId, modelId, format, onAudio, onReady, onError } = opts;
-  const proxyPort = (window as any).TTS_PROXY_PORT ?? 8787;
+  const proxyPort = (window as unknown as { TTS_PROXY_PORT?: number }).TTS_PROXY_PORT ?? 8787;
   const url = new URL(`ws://localhost:${proxyPort}/tts`);
   url.searchParams.set("voiceId", voiceId);
   if (modelId) url.searchParams.set("modelId", modelId);
